@@ -8,7 +8,7 @@ from Components.ScrollLabel import ScrollLabel
 from Components.Pixmap import Pixmap
 from Screens.MessageBox import MessageBox
 from Components.Language import language
-from twisted.internet import reactor
+from twisted.internet import reactor, task
 from twisted.web.client import getPage
 import threading
 import os
@@ -17,8 +17,8 @@ import time
 from datetime import datetime
 
 # Importy lokalne
-from .epgcore import EPGParser, EPGInjector, download_file
-from .automapper import AutoMapper
+from .epgcore import EPGParser, EPGInjector, download_file, inject_sat_fallback
+from .automapper import AutoMapper, _load_services_cached
 
 def get_lang():
     try:
@@ -35,6 +35,7 @@ TR = {
         "pl": "Twórca: Paweł Pawełek | Data: {} | email: msisytem@t.pl", 
         "en": "Creator: Paweł Pawełek | Date: {} | email: msisytem@t.pl"
     },
+    "help_arrows": {"pl": "< Zmień źródło strzałkami Lewo/Prawo >", "en": "< Change source with Left/Right arrows >"},
     "source_label": {"pl": "Wybierz Źródło:", "en": "Select Source:"},
     "custom_label": {"pl": "   >> Wpisz adres URL:", "en": "   >> Enter URL:"},
     "map_file_label": {"pl": "Plik mapowania:", "en": "Mapping File:"},
@@ -45,9 +46,9 @@ TR = {
     "btn_update": {"pl": "Aktualizuj (GitHub)", "en": "Update (GitHub)"},
     "status_ready": {"pl": "Gotowy. Wybierz opcje.\n", "en": "Ready. Select options.\n"},
     "downloading": {"pl": "Pobieranie...", "en": "Downloading..."},
-    "success": {"pl": "ZAKOŃCZONO! Pobrane zdarzenia: {}", "en": "DONE! Events loaded: {}"},
+    "success": {"pl": "ZAKOŃCZONO! XML: {} | SAT: {}", "en": "DONE! XML: {} | SAT: {}"},
     "restart_title": {"pl": "EPG Zaktualizowane!\nRestart GUI?", "en": "EPG Updated!\nRestart GUI?"},
-    "mapping_start": {"pl": "Start mapowania (Cache + Fast XML)...", "en": "Starting mapping (Cache + Fast XML)..."},
+    "mapping_start": {"pl": "Start mapowania", "en": "Starting mapping"},
     "mapping_success": {"pl": "Mapowanie OK! Kanałów: {}", "en": "Mapping OK! Channels: {}"},
     "no_map": {"pl": "Brak pliku mapowania!", "en": "No mapping file!"},
     "check_update": {"pl": "Sprawdzanie wersji na GitHub...", "en": "Checking GitHub version..."},
@@ -101,10 +102,12 @@ class EPGWorker:
     def get_url(self):
         val = config.plugins.SimpleIPTV_EPG.source_select.value
         return config.plugins.SimpleIPTV_EPG.custom_url.value if val == "CUSTOM" else val
+    
     def run_import(self, callback_log=None, silent=False):
         url = self.get_url()
         ext = ".xml.gz" if ".gz" in url else ".xml"
         temp_path = "/tmp/epg_temp" + ext
+        
         if callback_log: callback_log(_("downloading"))
         write_log("Start Download...")
         
@@ -119,20 +122,31 @@ class EPGWorker:
             
         parser = EPGParser(temp_path)
         injector = EPGInjector()
-        count = 0
+        
+        count_xml = 0
         batch = 0
+        injected_refs = set()
+
+        # 1. Import XMLTV
         for service_ref, event_data in parser.load_events(mapping):
             injector.add_event(service_ref, event_data)
-            count += 1
+            injected_refs.add(service_ref)
+            count_xml += 1
             batch += 1
             if batch >= 5000:
                 injector.commit()
                 batch = 0
         injector.commit()
+
+        # 2. SAT Fallback (Dla kanałów bez XML)
+        count_sat = inject_sat_fallback(injector, injected_refs, log_cb=write_log)
+        
         config.plugins.SimpleIPTV_EPG.last_update.value = str(int(time.time()))
         config.plugins.SimpleIPTV_EPG.save()
-        if callback_log: callback_log(_("success").format(count))
-        write_log(f"Import finished. Events: {count}")
+        
+        msg = _("success").format(count_xml, count_sat)
+        if callback_log: callback_log(msg)
+        write_log(f"Import finished. XML: {count_xml}, SAT: {count_sat}")
         return True
 
 class IPTV_EPG_Config(ConfigListScreen, Screen):
@@ -141,11 +155,17 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
             <widget name="qrcode" position="20,10" size="130,130" transparent="1" alphatest="on" />
             <widget name="support_text" position="160,30" size="700,30" font="Regular;24" foregroundColor="#00ff00" transparent="1" />
             <widget name="author_info" position="160,70" size="700,50" font="Regular;20" foregroundColor="#aaaaaa" transparent="1" />
+            
             <widget name="header_title" position="20,150" size="860,50" font="Regular;34" halign="center" valign="center" foregroundColor="#fcc400" backgroundColor="#202020" transparent="1" />
-            <widget name="config" position="20,210" size="860,150" font="Regular;22" itemHeight="35" scrollbarMode="showOnDemand" />
-            <widget name="label_status" position="20,380" size="860,30" font="Regular;22" foregroundColor="#00aaff" />
-            <widget name="status" position="20,415" size="860,190" font="Regular;18" foregroundColor="#dddddd" backgroundColor="#101010" />
+            
+            <widget name="help_arrows" position="20,200" size="860,25" font="Regular;20" halign="center" foregroundColor="#00aaff" transparent="1" />
+            <widget name="config" position="20,230" size="860,150" font="Regular;22" itemHeight="35" scrollbarMode="showOnDemand" />
+            
+            <widget name="label_status" position="20,400" size="860,30" font="Regular;22" foregroundColor="#00aaff" />
+            <widget name="status" position="20,435" size="860,170" font="Regular;18" foregroundColor="#dddddd" backgroundColor="#101010" />
+            
             <eLabel position="20,620" size="860,2" backgroundColor="#555555" />
+
             <ePixmap pixmap="skin_default/buttons/red.png" position="30,630" size="30,40" alphatest="on" />
             <widget name="key_red" position="65,630" zPosition="1" size="180,40" font="Regular;20" valign="center" transparent="1" />
             <ePixmap pixmap="skin_default/buttons/green.png" position="250,630" size="30,40" alphatest="on" />
@@ -162,6 +182,7 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
         self["header_title"] = Label(_("header"))
         self["qrcode"] = Pixmap()
         self["support_text"] = Label(_("support_text"))
+        self["help_arrows"] = Label(_("help_arrows"))
         
         date_str = datetime.now().strftime("%d.%m.%Y")
         self["author_info"] = Label(_("author_details").format(date_str))
@@ -226,9 +247,30 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
         try:
             t = datetime.now().strftime("%H:%M:%S")
             old = self["status"].getText()
-            self["status"].setText(old + f"[{t}] {message}\n")
-            self["status"].lastPage()
+            # Jeśli animacja kropek działa, nadpisujemy status zamiast dodawać
+            if getattr(self, 'dot_task', None) and self.dot_task.running:
+                 # Podczas animacji logujemy tylko do pliku, w GUI tylko status
+                 pass
+            else:
+                 self["status"].setText(old + f"[{t}] {message}\n")
+                 self["status"].lastPage()
         except: pass
+
+    # --- ANIMACJA KROPEK (Non-Blocking) ---
+    def animate_dots(self, prefix):
+        self.dots = 0
+        self.anim_prefix = prefix
+        self["status"].setText(prefix)
+        def _dot():
+            self.dots = (self.dots + 1) % 4
+            self["status"].setText(f"{self.anim_prefix}" + "." * self.dots)
+        self.dot_task = task.LoopingCall(_dot)
+        self.dot_task.start(0.3) 
+
+    def stop_dots(self):
+        if getattr(self, 'dot_task', None):
+            try: self.dot_task.stop()
+            except: pass
 
     def save_settings(self):
         for x in self["config"].list: x[1].save()
@@ -237,11 +279,21 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
     def start_import_gui(self):
         self.save_settings()
         self.log("--- START IMPORT (GUI) ---")
+        self.animate_dots("Importowanie danych") # Start Animacji
         threading.Thread(target=self.thread_import).start()
 
     def thread_import(self):
-        result = self.worker.run_import(callback_log=self.log, silent=False)
-        if result: reactor.callFromThread(self.ask_restart)
+        try:
+            result = self.worker.run_import(callback_log=None, silent=False)
+            reactor.callFromThread(self.stop_dots) # Stop Animacji
+            if result: 
+                reactor.callFromThread(self.gui_update_log, "SUKCES! Zakończono.")
+                reactor.callFromThread(self.ask_restart)
+            else:
+                reactor.callFromThread(self.gui_update_log, "BŁĄD IMPORTU!")
+        except Exception as e:
+            reactor.callFromThread(self.stop_dots)
+            reactor.callFromThread(self.gui_update_log, f"CRASH: {e}")
 
     def ask_restart(self):
         self.session.openWithCallback(self.do_restart, MessageBox, _("restart_title"), MessageBox.TYPE_YESNO)
@@ -254,6 +306,7 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
     def start_mapping(self):
         self.save_settings()
         self.log("--- START MAPPING ---")
+        self.animate_dots(_("mapping_start")) # Start Animacji
         threading.Thread(target=self.thread_mapping).start()
 
     def thread_mapping(self):
@@ -262,32 +315,30 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
             ext = ".xml.gz" if ".gz" in url else ".xml"
             temp_path = "/tmp/epg_temp" + ext
             
-            self.log(_("downloading"))
             if not download_file(url, temp_path, retries=3):
-                self.log("Download FAIL")
+                reactor.callFromThread(self.stop_dots)
+                reactor.callFromThread(self.gui_update_log, "Download FAIL")
                 return
 
-            mapper = AutoMapper(log_callback=self.log)
-            self.log(_("mapping_start"))
-            
+            mapper = AutoMapper(log_callback=None) # Logi wyłączone dla mappera, bo mamy kropki
             mapping = mapper.generate_mapping(temp_path)
             save_json(mapping, config.plugins.SimpleIPTV_EPG.mapping_file.value)
             
-            self.log(_("mapping_success").format(len(mapping)))
+            reactor.callFromThread(self.stop_dots) # Stop Animacji
+            reactor.callFromThread(self.gui_update_log, _("mapping_success").format(len(mapping)))
         except Exception as e:
-            self.log(f"ERROR: {e}")
+            reactor.callFromThread(self.stop_dots)
+            reactor.callFromThread(self.gui_update_log, f"ERROR: {e}")
 
     def check_github_update(self):
         self.log(_("check_update"))
-        # POPRAWIONY LINK BEZ ROZSZERZENIA .TXT
         GITHUB_VERSION_URL = "https://raw.githubusercontent.com/OliOli2013/SimpleIPTV_EPG/main/version"
         getPage(str.encode(GITHUB_VERSION_URL)).addCallback(self.github_callback).addErrback(self.github_error)
 
     def github_callback(self, data):
         try:
             remote_version = data.decode('utf-8').strip()
-            local_version = "1.0" # WERSJA ZGODNA Z GH
-            
+            local_version = "1.0"
             if remote_version > local_version:
                 self.log(_("update_avail"))
                 self.session.open(MessageBox, _("update_avail") + f"\nGitHub: {remote_version} | Local: {local_version}", MessageBox.TYPE_INFO)
@@ -296,17 +347,14 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
                 self.session.open(MessageBox, _("update_ok") + f"\n(v{local_version})", MessageBox.TYPE_INFO)
             else:
                 self.session.open(MessageBox, f"Wersja dev/test.\nGitHub: {remote_version} | Local: {local_version}", MessageBox.TYPE_INFO)
-        except Exception as e:
-            self.log(f"Update Check Error: {str(e)}")
+        except: pass
 
     def github_error(self, error):
         err_msg = str(error)
         if "404" in err_msg:
-            self.log("BŁĄD 404: Nie znaleziono pliku wersji!")
-            self.session.open(MessageBox, "Nie znaleziono pliku 'version' w repozytorium!", MessageBox.TYPE_ERROR)
+             self.session.open(MessageBox, "Brak pliku 'version' na GitHub!", MessageBox.TYPE_ERROR)
         else:
-            self.log(f"GitHub Connection Error: {err_msg}")
-            self.session.open(MessageBox, "Błąd połączenia z GitHub.\nSprawdź internet.", MessageBox.TYPE_ERROR)
+             self.session.open(MessageBox, "Błąd połączenia z GitHub.", MessageBox.TYPE_ERROR)
 
 def AutoUpdateCheck():
     if config.plugins.SimpleIPTV_EPG.auto_update.value:
