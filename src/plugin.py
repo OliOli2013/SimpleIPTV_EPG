@@ -18,8 +18,8 @@ import shutil
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
-# Importy lokalne
-from .epgcore import EPGParser, EPGInjector, download_file, inject_sat_fallback
+# Importy lokalne - upewnij się, że epgcore i automapper są zaktualizowane!
+from .epgcore import EPGParser, EPGInjector, download_file, inject_sat_fallback, inject_sat_clone_fallback, check_url_alive
 from .automapper import AutoMapper, _load_services_cached
 
 # --- KONFIGURACJA GIT ---
@@ -66,7 +66,9 @@ TR = {
     "update_done": {"pl": "Aktualizacja zakończona sukcesem!\nWymagany restart GUI.", "en": "Update successful!\nGUI Restart required."},
     "update_fail": {"pl": "Aktualizacja nieudana. Sprawdź logi.", "en": "Update failed. Check logs."},
     "timeout_error": {"pl": "BŁĄD: Przekroczono limit czasu (5 min)!", "en": "ERROR: Timeout exceeded (5 min)!"},
-    "import_crash": {"pl": "CRASH: Błąd krytyczny importu: {}", "en": "CRASH: Critical import error: {}"}
+    "import_crash": {"pl": "CRASH: Błąd krytyczny importu: {}", "en": "CRASH: Critical import error: {}"},
+    "sat_clone_start": {"pl": "1/4 Klonowanie EPG z SAT...", "en": "1/4 Cloning SAT EPG..."},
+    "xml_url_dead": {"pl": "BŁĄD: Źródło XML jest niedostępne (404/Down)!", "en": "ERROR: XML Source unreachable (404/Down)!"}
 }
 
 def _(key): return TR[key].get(lang_code, TR[key]["en"]) if key in TR else key
@@ -121,28 +123,50 @@ class EPGWorker:
         url = self.get_url()
         ext = ".xml.gz" if ".gz" in url else ".xml"
         temp_path = "/tmp/epg_temp" + ext
+        injector = EPGInjector()
+        injected_refs = set()
+
+        # KROK 1: Sprawdź czy URL żyje (Head Request)
+        if not check_url_alive(url):
+            if callback_log: callback_log(_("xml_url_dead"))
+            write_log(f"URL Dead: {url}")
+            return False
+
+        # KROK 2: AGRESYWNY SAT CLONE (Zanim cokolwiek pobierzemy)
+        # Kopiuje EPG z SAT do IPTV jeśli nazwy są identyczne
+        if callback_log: callback_log(_("sat_clone_start"))
+        cloned_refs = inject_sat_clone_fallback(injector, log_cb=write_log)
+        injected_refs.update(cloned_refs)
         
+        if callback_log: callback_log(f"Sklonowano z SAT: {len(cloned_refs)} kanałów")
+
+        # KROK 3: Pobieranie XML
         if callback_log: callback_log(_("downloading"))
         write_log("Start Download...")
-        
         if not download_file(url, temp_path, retries=3, timeout=120):
             if callback_log: callback_log("Download Error!")
             return False
             
-        mapping = load_json(config.plugins.SimpleIPTV_EPG.mapping_file.value)
-        if not mapping:
-            if callback_log: callback_log(_("no_map"))
-            return False
-            
+        # KROK 4: Automapowanie (tylko brakujących)
+        # Generujemy mapę w locie tylko dla kanałów, które nie dostały EPG z SAT Clone
+        mapper = AutoMapper(log_callback=write_log)
+        
+        if callback_log: callback_log("2/4 Mapowanie XML...")
+        # Ważne: exclude_refs zapobiega mapowaniu kanałów, które już mają EPG
+        mapping = mapper.generate_mapping(temp_path, exclude_refs=injected_refs)
+
+        # KROK 5: Parsowanie i Inject XML
+        if callback_log: callback_log("3/4 Import XML...")
+        write_log("Start Parsing XML...")
         parser = EPGParser(temp_path)
-        injector = EPGInjector()
         
         count_xml = 0
         batch = 0
-        injected_refs = set()
-
-        write_log("Start Parsing XML...")
+        
         for service_ref, event_data in parser.load_events(mapping):
+            # Podwójne zabezpieczenie: jeśli ref już jest w injected, pomiń
+            if service_ref in injected_refs: continue
+            
             injector.add_event(service_ref, event_data)
             injected_refs.add(service_ref)
             count_xml += 1
@@ -151,20 +175,26 @@ class EPGWorker:
             if batch >= 2000:
                 injector.commit()
                 batch = 0
-                if callback_log: 
-                     callback_log(f"XML: {count_xml}...")
+                if callback_log: callback_log(f"XML: {count_xml}...")
         
-        injector.commit() 
+        injector.commit()
 
-        if callback_log: callback_log("SAT Fallback...")
-        count_sat = inject_sat_fallback(injector, injected_refs, log_cb=write_log)
+        # KROK 6: Tradycyjny SAT Fallback (dla resztek - ręczna mapa w epgcore)
+        if callback_log: callback_log("4/4 SAT Fallback (Final)...")
+        count_sat_fallback = inject_sat_fallback(injector, injected_refs, log_cb=write_log)
         
         config.plugins.SimpleIPTV_EPG.last_update.value = str(int(time.time()))
         config.plugins.SimpleIPTV_EPG.save()
         
-        msg = _("success").format(count_xml, count_sat)
+        total_sat = len(cloned_refs) + count_sat_fallback
+        msg = _("success").format(count_xml, total_sat)
         if callback_log: callback_log(msg)
-        write_log(f"Import finished. XML: {count_xml}, SAT: {count_sat}")
+        write_log(f"KONIEC. XML: {count_xml}, SAT Clone: {len(cloned_refs)}, SAT Fallback: {count_sat_fallback}")
+        
+        # Sprzątanie
+        try: os.remove(temp_path)
+        except: pass
+        
         return True
 
 class IPTV_EPG_Config(ConfigListScreen, Screen):
@@ -300,6 +330,7 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
             try:
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(self.worker.run_import, callback_log=self.log, silent=False)
+                    # Timeout 5 minut (300s)
                     result = future.result(timeout=300)
                     
                     reactor.callFromThread(self.stop_dots)
@@ -337,12 +368,14 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
             ext = ".xml.gz" if ".gz" in url else ".xml"
             temp_path = "/tmp/epg_temp" + ext
             
+            # Pobieramy plik, żeby mieć na czym pracować
             if not download_file(url, temp_path, retries=3, timeout=60):
                 reactor.callFromThread(self.stop_dots)
                 reactor.callFromThread(self.gui_update_log, "Download FAIL")
                 return
 
             mapper = AutoMapper(log_callback=None)
+            # Przy ręcznym mapowaniu generujemy wszystko (brak exclude)
             mapping = mapper.generate_mapping(temp_path)
             save_json(mapping, config.plugins.SimpleIPTV_EPG.mapping_file.value)
             
@@ -361,11 +394,10 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
     def github_callback(self, data):
         try:
             remote_version = data.decode('utf-8').strip()
-            local_version = "1.1" # Musi się zgadzać z wersją w header
+            local_version = "1.1" 
             
             if remote_version > local_version:
                 self.log(f"Nowa wersja: {remote_version}")
-                # [UPDATE] Zamiast tylko INFO, pytamy czy zaktualizować
                 self.session.openWithCallback(
                     self.perform_update_question, 
                     MessageBox, 
@@ -388,7 +420,6 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
             threading.Thread(target=self.thread_perform_update, daemon=True).start()
 
     def thread_perform_update(self):
-        # Lista plików do pobrania z repozytorium
         FILES_TO_UPDATE = ["plugin.py", "epgcore.py", "automapper.py", "version"]
         success = True
         plugin_path = os.path.dirname(__file__)
@@ -399,9 +430,8 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
                 target_tmp = f"/tmp/{fname}"
                 target_final = os.path.join(plugin_path, fname)
                 
-                # Pobierz do TMP
-                if download_file(url, target_tmp, retries=2, timeout=30):
-                    # Nadpisz plik wtyczki
+                # Używamy epgcore.download_file
+                if download_file(url, target_tmp, retries=2, timeout=10):
                     shutil.move(target_tmp, target_final)
                     reactor.callFromThread(self.gui_update_log, f"Zaktualizowano: {fname}")
                 else:
