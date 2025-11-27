@@ -1,4 +1,3 @@
-```bash
 #!/bin/sh
 # Simple IPTV EPG Installer by OliOli2013
 
