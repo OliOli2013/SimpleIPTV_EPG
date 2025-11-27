@@ -15,6 +15,7 @@ import os
 import json
 import time
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, TimeoutError # [UPDATE] Nowy import
 
 # Importy lokalne
 from .epgcore import EPGParser, EPGInjector, download_file, inject_sat_fallback
@@ -29,7 +30,7 @@ def get_lang():
 lang_code = get_lang()
 
 TR = {
-    "header": {"pl": "Simple IPTV EPG v1.0", "en": "Simple IPTV EPG v1.0"},
+    "header": {"pl": "Simple IPTV EPG v1.1 (Optimized)", "en": "Simple IPTV EPG v1.1 (Optimized)"}, # Zmiana wersji
     "support_text": {"pl": "Wesprzyj rozwój wtyczki (Buy Coffee)", "en": "Support development"},
     "author_details": {
         "pl": "Twórca: Paweł Pawełek | Data: {} | email: msisytem@t.pl", 
@@ -53,7 +54,9 @@ TR = {
     "no_map": {"pl": "Brak pliku mapowania!", "en": "No mapping file!"},
     "check_update": {"pl": "Sprawdzanie wersji na GitHub...", "en": "Checking GitHub version..."},
     "update_ok": {"pl": "Masz najnowszą wersję.", "en": "You have the latest version."},
-    "update_avail": {"pl": "Dostępna nowa wersja! Sprawdź GitHub.", "en": "New version available! Check GitHub."}
+    "update_avail": {"pl": "Dostępna nowa wersja! Sprawdź GitHub.", "en": "New version available! Check GitHub."},
+    "timeout_error": {"pl": "BŁĄD: Przekroczono limit czasu (5 min)!", "en": "ERROR: Timeout exceeded (5 min)!"},
+    "import_crash": {"pl": "CRASH: Błąd krytyczny importu: {}", "en": "CRASH: Critical import error: {}"}
 }
 
 def _(key): return TR[key].get(lang_code, TR[key]["en"]) if key in TR else key
@@ -99,6 +102,7 @@ def save_json(data, path):
 class EPGWorker:
     def __init__(self):
         self.lock = threading.Lock()
+        
     def get_url(self):
         val = config.plugins.SimpleIPTV_EPG.source_select.value
         return config.plugins.SimpleIPTV_EPG.custom_url.value if val == "CUSTOM" else val
@@ -111,7 +115,8 @@ class EPGWorker:
         if callback_log: callback_log(_("downloading"))
         write_log("Start Download...")
         
-        if not download_file(url, temp_path, retries=3):
+        # [UPDATE] Nowa funkcja download_file z timeoutem
+        if not download_file(url, temp_path, retries=3, timeout=120):
             if callback_log: callback_log("Download Error!")
             return False
             
@@ -127,18 +132,28 @@ class EPGWorker:
         batch = 0
         injected_refs = set()
 
-        # 1. Import XMLTV
+        # 1. Import XMLTV z logowaniem postępu
+        # [UPDATE] Przekazanie callbacku do load_events byłoby trudne w pętli, 
+        # więc logujemy wewnątrz pętli w pluginie
+        
+        write_log("Start Parsing XML...")
         for service_ref, event_data in parser.load_events(mapping):
             injector.add_event(service_ref, event_data)
             injected_refs.add(service_ref)
             count_xml += 1
             batch += 1
-            if batch >= 5000:
+            
+            # [UPDATE] Commit częściej + logowanie do GUI co 2000 eventów
+            if batch >= 2000:
                 injector.commit()
                 batch = 0
-        injector.commit()
+                if callback_log: 
+                     callback_log(f"XML: {count_xml}...")
+        
+        injector.commit() # Reszta bufora
 
-        # 2. SAT Fallback (Dla kanałów bez XML)
+        # 2. SAT Fallback (Optimized Batch)
+        if callback_log: callback_log("SAT Fallback...")
         count_sat = inject_sat_fallback(injector, injected_refs, log_cb=write_log)
         
         config.plugins.SimpleIPTV_EPG.last_update.value = str(int(time.time()))
@@ -151,7 +166,7 @@ class EPGWorker:
 
 class IPTV_EPG_Config(ConfigListScreen, Screen):
     skin = """
-        <screen name="IPTV_EPG_Config" position="center,center" size="900,680" title="Simple IPTV EPG v1.0">
+        <screen name="IPTV_EPG_Config" position="center,center" size="900,680" title="Simple IPTV EPG v1.1">
             <widget name="qrcode" position="20,10" size="130,130" transparent="1" alphatest="on" />
             <widget name="support_text" position="160,30" size="700,30" font="Regular;24" foregroundColor="#00ff00" transparent="1" />
             <widget name="author_info" position="160,70" size="700,50" font="Regular;20" foregroundColor="#aaaaaa" transparent="1" />
@@ -247,16 +262,15 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
         try:
             t = datetime.now().strftime("%H:%M:%S")
             old = self["status"].getText()
-            # Jeśli animacja kropek działa, nadpisujemy status zamiast dodawać
+            # Jeśli w wiadomości jest status postępu (np. "XML: 5000..."), aktualizuj animację
             if getattr(self, 'dot_task', None) and self.dot_task.running:
-                 # Podczas animacji logujemy tylko do pliku, w GUI tylko status
-                 pass
+                 self.anim_prefix = message # Aktualizuj tekst kropek
             else:
                  self["status"].setText(old + f"[{t}] {message}\n")
                  self["status"].lastPage()
         except: pass
 
-    # --- ANIMACJA KROPEK (Non-Blocking) ---
+    # --- ANIMACJA KROPEK (Z dynamicznym tekstem) ---
     def animate_dots(self, prefix):
         self.dots = 0
         self.anim_prefix = prefix
@@ -279,21 +293,31 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
     def start_import_gui(self):
         self.save_settings()
         self.log("--- START IMPORT (GUI) ---")
-        self.animate_dots("Importowanie danych") # Start Animacji
-        threading.Thread(target=self.thread_import).start()
+        self.animate_dots("Inicjalizacja") 
 
-    def thread_import(self):
-        try:
-            result = self.worker.run_import(callback_log=None, silent=False)
-            reactor.callFromThread(self.stop_dots) # Stop Animacji
-            if result: 
-                reactor.callFromThread(self.gui_update_log, "SUKCES! Zakończono.")
-                reactor.callFromThread(self.ask_restart)
-            else:
-                reactor.callFromThread(self.gui_update_log, "BŁĄD IMPORTU!")
-        except Exception as e:
-            reactor.callFromThread(self.stop_dots)
-            reactor.callFromThread(self.gui_update_log, f"CRASH: {e}")
+        # [UPDATE] ThreadPoolExecutor z timeoutem
+        def _run_with_timeout():
+            try:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    # Przekazujemy self.log jako callback do workera
+                    future = executor.submit(self.worker.run_import, callback_log=self.log, silent=False)
+                    # Oczekiwanie max 300 sekund (5 min)
+                    result = future.result(timeout=300)
+                    
+                    reactor.callFromThread(self.stop_dots)
+                    if result: 
+                        reactor.callFromThread(self.gui_update_log, "SUKCES! Zakończono.")
+                        reactor.callFromThread(self.ask_restart)
+                    else:
+                        reactor.callFromThread(self.gui_update_log, "BŁĄD IMPORTU!")
+            except TimeoutError:
+                reactor.callFromThread(self.stop_dots)
+                reactor.callFromThread(self.gui_update_log, _("timeout_error"))
+            except Exception as e:
+                reactor.callFromThread(self.stop_dots)
+                reactor.callFromThread(self.gui_update_log, _("import_crash").format(e))
+
+        threading.Thread(target=_run_with_timeout, daemon=True).start()
 
     def ask_restart(self):
         self.session.openWithCallback(self.do_restart, MessageBox, _("restart_title"), MessageBox.TYPE_YESNO)
@@ -306,8 +330,10 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
     def start_mapping(self):
         self.save_settings()
         self.log("--- START MAPPING ---")
-        self.animate_dots(_("mapping_start")) # Start Animacji
-        threading.Thread(target=self.thread_mapping).start()
+        self.animate_dots(_("mapping_start"))
+        
+        # Mapping jest szybki, ale też damy w wątku daemona
+        threading.Thread(target=self.thread_mapping, daemon=True).start()
 
     def thread_mapping(self):
         try:
@@ -315,16 +341,17 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
             ext = ".xml.gz" if ".gz" in url else ".xml"
             temp_path = "/tmp/epg_temp" + ext
             
-            if not download_file(url, temp_path, retries=3):
+            # Używamy nowego downloadera z timeoutem
+            if not download_file(url, temp_path, retries=3, timeout=60):
                 reactor.callFromThread(self.stop_dots)
                 reactor.callFromThread(self.gui_update_log, "Download FAIL")
                 return
 
-            mapper = AutoMapper(log_callback=None) # Logi wyłączone dla mappera, bo mamy kropki
+            mapper = AutoMapper(log_callback=None)
             mapping = mapper.generate_mapping(temp_path)
             save_json(mapping, config.plugins.SimpleIPTV_EPG.mapping_file.value)
             
-            reactor.callFromThread(self.stop_dots) # Stop Animacji
+            reactor.callFromThread(self.stop_dots)
             reactor.callFromThread(self.gui_update_log, _("mapping_success").format(len(mapping)))
         except Exception as e:
             reactor.callFromThread(self.stop_dots)
@@ -338,7 +365,7 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
     def github_callback(self, data):
         try:
             remote_version = data.decode('utf-8').strip()
-            local_version = "1.0"
+            local_version = "1.1" # Update wersji lokalnej
             if remote_version > local_version:
                 self.log(_("update_avail"))
                 self.session.open(MessageBox, _("update_avail") + f"\nGitHub: {remote_version} | Local: {local_version}", MessageBox.TYPE_INFO)
@@ -351,10 +378,7 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
 
     def github_error(self, error):
         err_msg = str(error)
-        if "404" in err_msg:
-             self.session.open(MessageBox, "Brak pliku 'version' na GitHub!", MessageBox.TYPE_ERROR)
-        else:
-             self.session.open(MessageBox, "Błąd połączenia z GitHub.", MessageBox.TYPE_ERROR)
+        self.session.open(MessageBox, "GitHub Error: " + err_msg, MessageBox.TYPE_ERROR)
 
 def AutoUpdateCheck():
     if config.plugins.SimpleIPTV_EPG.auto_update.value:
@@ -364,7 +388,8 @@ def AutoUpdateCheck():
         if (now - last_upd) > 86400:
             write_log("[AutoUpdate] Triggering background update...")
             worker = EPGWorker()
-            threading.Thread(target=worker.run_import, kwargs={'silent': True}).start()
+            # W tle też używamy logiki bezpiecznej, ale bez GUI
+            threading.Thread(target=worker.run_import, kwargs={'silent': True}, daemon=True).start()
     reactor.callLater(3600, AutoUpdateCheck)
 
 def StartSession(**kwargs):
