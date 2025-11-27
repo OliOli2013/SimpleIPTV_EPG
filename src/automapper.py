@@ -3,55 +3,43 @@ import re
 import xml.etree.cElementTree as ET
 import gzip
 import json
-import time  # Dodano do obsługi pauz dla procesora
 
 class AutoMapper:
     def __init__(self, log_callback=None):
         self.bouquets_path = '/etc/enigma2/'
         self.log = log_callback
         
-        # Lista słów ignorowanych
+        # Lista słów do usunięcia (tylko najważniejsze dla szybkości)
         self.junk_words = {
-            'HD', 'FHD', 'UHD', '4K', '8K', 'SD', 'HEVC', 'H265', 'H264', 'AAC', 'AC3',
-            'PL', 'POL', '(PL)', '[PL]', '|PL|', 'PL.', 'PL:', 'PL-',
-            'VIP', 'RAW', 'VOD', 'XXX', 'PREMIUM', 'BACKUP', 'UPDATE',
-            'SUB', 'DUB', 'LEKTOR', 'NAPISY', 'MULTI',
-            'TV', 'CHANNEL', 'STREAM', 'LIVE', '24/7',
-            'PPV', 'PPV1', 'PPV2', 'PPV3', 'PPV4', 'PPV5', 'PPV6',
-            'OTV', 'INFO', 'NA', 'ZYWO', 'REC', 'TIMESHIFT', 'CATCHUP',
-            'MAC', 'PORTAL', 'KANALY', 'KANAŁY', 'DLA', 'DZIECI',
-            'LOW', 'HIGH', 'ORIGINAL', 'SEQ', 'H.', 'P.', 'S.',
-            'HOME', 'OFFICE', 'MOBILE', 'FULL', 'READY', '1080P', '720P'
+            'HD', 'FHD', 'UHD', '4K', '8K', 'SD', 'HEVC', 'H265', 'PL', 'POL', 
+            '(PL)', '[PL]', '|PL|', 'VIP', 'RAW', 'VOD', 'XXX', 'PREMIUM', 
+            'BACKUP', 'UPDATE', 'TV', 'CHANNEL', 'STREAM', 'LIVE', 
+            'PPV', 'OTV', 'INFO', 'NA', 'ZYWO', 'REC', 'MAC', 'PORTAL'
         }
-        
-        # Pre-kompilacja Regex dla wydajności (Fix przycięć)
-        self.re_plus = re.compile(r'\+')
-        self.re_and = re.compile(r'&')
-        self.re_brackets = re.compile(r'\[.*?\]')
-        self.re_parenthesis_pl = re.compile(r'\(PL\)')
-        self.re_chars = re.compile(r'[#|_.\-\(\):]')
 
     def _simplify_name(self, name):
+        """Szybkie czyszczenie nazwy."""
         try:
             if not name: return ""
+            # Szybka konwersja
             if isinstance(name, bytes): name = name.decode('utf-8', 'ignore')
             
             name = name.upper()
             
-            # Szybkie zamiany na skompilowanych wzorcach
-            name = self.re_plus.sub('PLUS', name)
-            name = self.re_and.sub('AND', name)
-            name = self.re_brackets.sub('', name)
-            name = self.re_parenthesis_pl.sub('', name)
-            name = self.re_chars.sub(' ', name)
+            # Jeśli nazwa jest krótka, nie mielimy jej regexami
+            if len(name) < 3: return name
+
+            # Proste zamiany znaków są szybsze niż regex
+            name = name.replace('+', 'PLUS').replace('&', 'AND')
+            name = name.replace('.', ' ').replace('-', ' ').replace('_', ' ')
+            name = name.replace('(', '').replace(')', '').replace('[', '').replace(']', '')
             
             parts = name.split()
             clean_parts = []
+            
             for word in parts:
                 if word not in self.junk_words:
-                    # Zachowaj jeśli dłuższe niż 1 lub cyfra
-                    if len(word) > 1 or word.isdigit():
-                        clean_parts.append(word)
+                    clean_parts.append(word)
             
             return "".join(clean_parts)
         except:
@@ -61,7 +49,7 @@ class AutoMapper:
         services = []
         try:
             files = [f for f in os.listdir(self.bouquets_path) if f.endswith('.tv') and 'userbouquet' in f]
-        except OSError: return []
+        except: return []
 
         for filename in files:
             try:
@@ -74,8 +62,8 @@ class AutoMapper:
                             potential_name = parts[-1]
                             
                             if "###" in potential_name or "---" in potential_name: continue
-                            if len(potential_name) < 2: continue
-                                
+                            
+                            # Pobieramy refa
                             ref_clean = line.replace('#SERVICE ', '').strip()
                             services.append({'full_ref': ref_clean, 'name': potential_name})
                         elif line.startswith('#DESCRIPTION'):
@@ -84,14 +72,14 @@ class AutoMapper:
             except: continue
         return services
 
-    def get_xmltv_data(self, xml_path):
-        exact_map = {}
-        buckets = {}
+    def get_xmltv_map(self, xml_path):
+        """Tworzy prostą mapę: {UPROSZCZONA_NAZWA: XML_ID}"""
+        xml_map = {}
         
-        if not os.path.exists(xml_path): return {}, {}
+        if not os.path.exists(xml_path): return {}
         
         opener = gzip.open if xml_path.endswith('.gz') else open
-        if self.log: self.log("Indeksowanie XML...")
+        if self.log: self.log("Wczytywanie bazy XML...")
         
         try:
             with opener(xml_path, 'rb') as f:
@@ -99,81 +87,64 @@ class AutoMapper:
                 for event, elem in context:
                     if elem.tag == 'channel':
                         xml_id = elem.get('id')
-                        display_name = ""
+                        
+                        # 1. Dodaj po ID (często ID to np. "TVP1.pl")
+                        simple_id = self._simplify_name(xml_id.replace('.pl', ''))
+                        if simple_id: xml_map[simple_id] = xml_id
+                        
+                        # 2. Dodaj po Display Name
                         for child in elem:
                             if child.tag == 'display-name':
-                                display_name = child.text
+                                simple_name = self._simplify_name(child.text)
+                                if simple_name: xml_map[simple_name] = xml_id
                                 break
                         
-                        candidates = []
-                        if display_name: candidates.append(self._simplify_name(display_name))
-                        candidates.append(self._simplify_name(xml_id.replace('.pl', '')))
-                        
-                        for clean_name in candidates:
-                            if len(clean_name) > 1:
-                                exact_map[clean_name] = xml_id
-                                first_char = clean_name[0]
-                                if first_char not in buckets: buckets[first_char] = []
-                                buckets[first_char].append((clean_name, xml_id))
-                                
                         elem.clear()
                     elif elem.tag == 'programme':
+                        # Jak dojdziemy do programu, to koniec listy kanałów - przerywamy dla szybkości
                         break
         except Exception: pass
-        return exact_map, buckets
+        
+        return xml_map
 
     def generate_mapping(self, xml_path):
+        # 1. Pobierz kanały z tunera
         e2_services = self.get_enigma_services()
-        if self.log: self.log(f"Analiza {len(e2_services)} kanałów z tunera...")
+        if self.log: self.log(f"Znaleziono {len(e2_services)} kanałów w tunerze.")
         
-        exact_map, buckets = self.get_xmltv_data(xml_path)
+        # 2. Pobierz mapę XML
+        xml_map = self.get_xmltv_map(xml_path)
+        if self.log: self.log(f"Załadowano bazę XML ({len(xml_map)} wpisów).")
         
         final_mapping = {}
         matched_count = 0
         processed = 0
         total = len(e2_services)
 
-        if self.log: self.log("Inteligentne parowanie (Anti-Freeze)...")
+        if self.log: self.log("Błyskawiczne parowanie...")
 
         for service in e2_services:
             processed += 1
-            
-            # FIX ZAWIESZANIA:
-            # Co 200 kanałów dajemy procesorowi 10ms przerwy, aby odświeżył GUI
-            if processed % 200 == 0:
-                time.sleep(0.01) 
-            
-            # Logujemy rzadziej, żeby nie zamulać (co 1000)
-            if self.log and processed % 1000 == 0:
+            if self.log and processed % 2000 == 0:
                 self.log(f"Przetworzono {processed}/{total}...")
 
             try:
-                iptv_clean = self._simplify_name(service['name'])
-                if len(iptv_clean) < 2: continue
-
-                xml_id = None
-
-                # 1. Dokładne
-                if iptv_clean in exact_map:
-                    xml_id = exact_map[iptv_clean]
+                # Czyścimy nazwę kanału IPTV (np. "TVP 1 FHD" -> "TVP1")
+                simple_name = self._simplify_name(service['name'])
                 
-                # 2. Bucketing (Szybkie zawieranie)
-                if not xml_id:
-                    first_char = iptv_clean[0]
-                    if first_char in buckets:
-                        for xml_name, xid in buckets[first_char]:
-                            if len(xml_name) > 2 and xml_name in iptv_clean:
-                                if len(iptv_clean) - len(xml_name) < 5:
-                                    xml_id = xid
-                                    break
-                
-                if xml_id:
+                if not simple_name or len(simple_name) < 2: continue
+
+                # Szybki strzał: Czy "TVP1" jest w bazie XML?
+                if simple_name in xml_map:
+                    xml_id = xml_map[simple_name]
+                    
                     if xml_id not in final_mapping:
                         final_mapping[xml_id] = []
                         matched_count += 1
+                    
                     final_mapping[xml_id].append(service['full_ref'])
+            
+            except: continue # Jakikolwiek błąd na kanale - pomiń go i idź dalej
 
-            except Exception: continue
-
-        if self.log: self.log(f"Unikalne EPG: {matched_count}")
+        if self.log: self.log(f"Dopasowano unikalnych: {matched_count}")
         return final_mapping
