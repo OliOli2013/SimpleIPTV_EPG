@@ -23,26 +23,33 @@ def get_lang():
     try:
         lang = language.getLanguage()
         return "pl" if "pl" in lang.lower() else "en"
-    except: return "en"
+    except:
+        return "en"
 
 lang_code = get_lang()
 
 TR = {
-    "header": {"pl": "Simple IPTV EPG v1.0", "en": "Simple IPTV EPG v1.0"},
-    "support_text": {"pl": "Wesprzyj rozwój wtyczki (Buy Coffee)", "en": "Support development"},
+    "header": {
+        "pl": "Simple IPTV EPG v1.0",
+        "en": "Simple IPTV EPG v1.0"
+    },
+    "support_text": {
+        "pl": "Wesprzyj rozwój wtyczki (Buy Coffee)",
+        "en": "Support development (Buy Coffee)"
+    },
     "source_label": {"pl": "Wybierz Źródło:", "en": "Select Source:"},
     "custom_label": {"pl": "   >> Wpisz adres URL:", "en": "   >> Enter URL:"},
     "map_file_label": {"pl": "Plik mapowania:", "en": "Mapping File:"},
     "btn_exit": {"pl": "Wyjdź", "en": "Exit"},
-    "btn_import": {"pl": "Importuj", "en": "Import"},
+    "btn_import": {"pl": "Importuj (Widoczny)", "en": "Import (Visible)"},
     "btn_map": {"pl": "Mapuj", "en": "Map"},
-    "btn_bg": {"pl": "Pobierz w tle", "en": "Background DL"},
+    "btn_bg": {"pl": "Pobierz w tle", "en": "Download in Background"},
     "status_ready": {
         "pl": "Gotowy. Wybierz źródło i wciśnij MAPUJ.\nZielony = Podgląd | Niebieski = W tle",
         "en": "Ready. Select source and press MAP.\nGreen = View Log | Blue = Background"
     },
     "help_text": {"pl": "Lewo/Prawo - zmiana źródła", "en": "Left/Right - change source"},
-    "downloading": {"pl": "Pobieranie pliku (Czekaj...)...", "en": "Downloading file..."},
+    "downloading": {"pl": "Pobieranie pliku (Czekaj...)...", "en": "Downloading file (Wait...)..."},
     "download_ok": {"pl": "Pobieranie zakończone.", "en": "Download finished."},
     "download_fail": {"pl": "BŁĄD POBIERANIA! Sprawdź adres.", "en": "DOWNLOAD ERROR! Check URL."},
     "no_map": {"pl": "BRAK MAPOWANIA! Najpierw użyj żółtego.", "en": "NO MAPPING! Use Yellow first."},
@@ -62,16 +69,18 @@ TR = {
     "press_green": {"pl": "Teraz naciśnij ZIELONY lub NIEBIESKI.", "en": "Now press GREEN or BLUE."}
 }
 
-def _(key): return TR[key].get(lang_code, TR[key]["en"]) if key in TR else key
+def _(key):
+    return TR[key].get(lang_code, TR[key]["en"]) if key in TR else key
 
 # --- KONFIGURACJA ---
 config.plugins.SimpleIPTV_EPG = ConfigSubsection()
 
 EPG_SOURCES = [
     ("https://epgshare01.online/epgshare01/epg_ripper_PL1.xml.gz", "EPG Share PL (Polska - Polecane)"),
-    ("https://epgshare01.online/epgshare01/epg_ripper_ALL_SOURCES1.xml.gz", "EPG Share ALL (Świat - Duży!)"),
+    ("https://epgshare01.online/epgshare01/epg_ripper_ALL_SOURCES1.xml.gz", "EPG Share ALL (Świat - Duży plik)"),
     ("https://raw.githubusercontent.com/globetvapp/epg/main/Poland/poland2.xml.gz", "GlobeTV Polska (GitHub)"),
     ("https://iptv-epg.org/files/epg-pl.xml.gz", "IPTV-EPG.org (Polska)"),
+    ("http://mbebe.j.pl/epg/mbebe.xml.gz", "Mbebe (Główny - j.pl)"),
     ("https://epg.ovh/pl.gz", "EPG OVH (PL - Basic)"),
     ("https://epg.ovh/plar.gz", "EPG OVH (PL + Opisy)"),
     ("CUSTOM", "--- Custom URL ---")
@@ -99,29 +108,17 @@ def save_json(data, path):
         with open(path, 'w') as f: json.dump(data, f, indent=4)
     except: pass
 
-# --- STAN GLOBALNY ---
-class GlobalState:
-    is_running = False
-    log_buffer = []
-    
-    @staticmethod
-    def add_log(msg):
-        t = datetime.now().strftime("%H:%M:%S")
-        line = f"[{t}] {msg}"
-        GlobalState.log_buffer.append(line)
-        if len(GlobalState.log_buffer) > 50: GlobalState.log_buffer.pop(0)
-        write_log(msg)
-
 class IPTV_EPG_Config(ConfigListScreen, Screen):
     skin = """
         <screen name="IPTV_EPG_Config" position="center,center" size="900,650" title="Simple IPTV EPG v1.0">
             <widget name="qrcode" position="20,10" size="130,130" transparent="1" alphatest="on" />
             <widget name="support_text" position="160,40" size="600,30" font="Regular;24" foregroundColor="#00ff00" transparent="1" />
             <widget name="author_info" position="160,80" size="600,25" font="Regular;18" foregroundColor="#aaaaaa" transparent="1" />
-            
+
             <widget name="header_title" position="20,150" size="860,50" font="Regular;34" halign="center" valign="center" foregroundColor="#fcc400" backgroundColor="#202020" transparent="1" />
             
             <widget name="config" position="20,210" size="860,120" font="Regular;22" itemHeight="35" scrollbarMode="showOnDemand" />
+            <widget name="help_text" position="20,335" size="860,25" font="Regular;18" foregroundColor="#aaaaaa" halign="right" />
             
             <widget name="label_status" position="20,370" size="860,30" font="Regular;22" foregroundColor="#00aaff" />
             <widget name="status" position="20,405" size="860,180" font="Regular;18" foregroundColor="#dddddd" backgroundColor="#101010" />
@@ -130,10 +127,13 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
 
             <ePixmap pixmap="skin_default/buttons/red.png" position="30,610" size="30,40" alphatest="on" />
             <widget name="key_red" position="65,610" zPosition="1" size="150,40" font="Regular;20" valign="center" transparent="1" />
+
             <ePixmap pixmap="skin_default/buttons/green.png" position="240,610" size="30,40" alphatest="on" />
             <widget name="key_green" position="275,610" zPosition="1" size="180,40" font="Regular;20" valign="center" transparent="1" />
+
             <ePixmap pixmap="skin_default/buttons/yellow.png" position="480,610" size="30,40" alphatest="on" />
             <widget name="key_yellow" position="515,610" zPosition="1" size="150,40" font="Regular;20" valign="center" transparent="1" />
+
             <ePixmap pixmap="skin_default/buttons/blue.png" position="690,610" size="30,40" alphatest="on" />
             <widget name="key_blue" position="725,610" zPosition="1" size="160,40" font="Regular;20" valign="center" transparent="1" />
         </screen>
@@ -142,6 +142,7 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
     def __init__(self, session):
         Screen.__init__(self, session)
         self["header_title"] = Label(_("header"))
+        
         self["qrcode"] = Pixmap()
         self["support_text"] = Label(_("support_text"))
         self["author_info"] = Label("v1.0 | by Pawel Pawełek | msisystem@t.pl")
@@ -153,129 +154,132 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
         
         self["label_status"] = Label("Log:")
         self["status"] = ScrollLabel(_("status_ready"))
+        self["help_text"] = Label(_("help_text"))
         
         self.list = []
-        self.buildConfigList(init_phase=True)
-        
+        self.buildConfigList()
         ConfigListScreen.__init__(self, self.list)
         
         self["actions"] = ActionMap(["SetupActions", "ColorActions", "DirectionActions"], {
             "red": self.close,
-            "green": self.start_import,
-            "yellow": self.start_mapping,
-            "blue": self.hide_background,
+            "green": self.do_import_action,
+            "yellow": self.do_mapping_action,
+            "blue": self.do_background_action,
             "cancel": self.close,
-            "save": self.start_import,
             "left": self.keyLeft,
-            "right": self.keyRight
+            "right": self.keyRight,
+            "save": self.do_import_action
         }, -2)
         
         self.onLayoutFinish.append(self.load_qr_code)
         
-        if GlobalState.is_running:
-            self.refresh_log()
+        if os.path.exists(DEBUG_LOG_FILE):
+            try: os.remove(DEBUG_LOG_FILE)
+            except: pass
 
     def load_qr_code(self):
         try:
             plugin_path = os.path.dirname(__file__)
             qr_path = os.path.join(plugin_path, "Kod_QR_buycoffee.png")
-            if os.path.exists(qr_path): self["qrcode"].instance.setPixmapFromFile(qr_path)
+            if os.path.exists(qr_path):
+                self["qrcode"].instance.setPixmapFromFile(qr_path)
         except: pass
 
-    def buildConfigList(self, init_phase=False):
+    def buildConfigList(self):
         self.list = []
         self.list.append(getConfigListEntry(_("source_label"), config.plugins.SimpleIPTV_EPG.source_select))
         if config.plugins.SimpleIPTV_EPG.source_select.value == "CUSTOM":
             self.list.append(getConfigListEntry(_("custom_label"), config.plugins.SimpleIPTV_EPG.custom_url))
         self.list.append(getConfigListEntry(_("map_file_label"), config.plugins.SimpleIPTV_EPG.mapping_file))
-        
-        if not init_phase:
-            self["config"].setList(self.list)
 
-    def keyLeft(self): ConfigListScreen.keyLeft(self); self.buildConfigList()
-    def keyRight(self): ConfigListScreen.keyRight(self); self.buildConfigList()
+    def updateConfigList(self):
+        self.buildConfigList()
+        self["config"].setList(self.list)
 
-    def refresh_log(self):
-        if GlobalState.is_running:
-            try:
-                text = "\n".join(GlobalState.log_buffer)
-                self["status"].setText(text)
-                self["status"].lastPage()
-                reactor.callLater(1, self.refresh_log)
-            except: pass
+    def keyLeft(self):
+        ConfigListScreen.keyLeft(self)
+        self.updateConfigList()
+
+    def keyRight(self):
+        ConfigListScreen.keyRight(self)
+        self.updateConfigList()
+
+    def gui_update_log(self, message):
+        try:
+            current_text = self["status"].getText()
+            t = datetime.now().strftime("%H:%M:%S")
+            self["status"].setText(current_text + f"[{t}] {message}\n")
+            self["status"].lastPage()
+        except: pass
 
     def log(self, message):
-        GlobalState.add_log(message)
-
+        write_log(message)
+        reactor.callFromThread(self.gui_update_log, message)
+        
     def ask_restart(self):
-        self.session.openWithCallback(self.do_restart, MessageBox, _("restart_title"), MessageBox.TYPE_YESNO)
+        self.session.openWithCallback(
+            self.do_restart,
+            MessageBox,
+            _("restart_title"),
+            MessageBox.TYPE_YESNO
+        )
 
     def do_restart(self, answer):
         if answer:
             from enigma import quitMainloop
             quitMainloop(3)
 
-    def hide_background(self):
-        if GlobalState.is_running:
-            self.session.open(MessageBox, _("bg_started"), MessageBox.TYPE_INFO, timeout=3)
-            self.close()
-        else:
-            self.start_import(background=True)
-
-    def start_import(self, background=False):
-        if GlobalState.is_running:
-            self.log("Proces już trwa!")
-            return
-        
-        self.save_config_only()
-        GlobalState.is_running = True
-        GlobalState.log_buffer = []
-        
-        self.log("--- START IMPORTU ---")
-        self.refresh_log()
-        
-        if background:
-            self.session.open(MessageBox, _("bg_started"), MessageBox.TYPE_INFO, timeout=3)
-            self.close()
-        
-        t = threading.Thread(target=self.worker_import)
-        t.start()
-
-    def start_mapping(self):
-        if GlobalState.is_running: return
-        self.save_config_only()
-        GlobalState.is_running = True
-        GlobalState.log_buffer = []
-        self.log("--- START MAPOWANIA ---")
-        self.refresh_log()
-        t = threading.Thread(target=self.worker_mapping)
-        t.start()
-
-    def save_config_only(self):
-        for x in self["config"].list: x[1].save()
-        config.plugins.SimpleIPTV_EPG.save()
-
-    def _get_url(self):
+    def _get_source_url(self):
         val = config.plugins.SimpleIPTV_EPG.source_select.value
-        return config.plugins.SimpleIPTV_EPG.custom_url.value if val == "CUSTOM" else val
+        if val == "CUSTOM":
+            return config.plugins.SimpleIPTV_EPG.custom_url.value
+        return val
 
-    def worker_import(self):
+    def _download_source(self):
+        url = self._get_source_url()
+        temp_path = "/tmp/epg_temp_source.xml.gz"
+        
+        self.log(f"URL: {url}")
+        self.log(_("downloading"))
+        
+        if download_file(url, temp_path):
+            self.log(_("download_ok"))
+            return temp_path
+        else:
+            self.log(_("download_fail"))
+            return None
+
+    # --- AKCJE PRZYCISKÓW ---
+    
+    def do_import_action(self):
+        self.save_config_only()
+        self.log("--- START ---")
+        t = threading.Thread(target=self.do_import)
+        t.start()
+
+    def do_background_action(self):
+        self.save_config_only()
+        # Informacja dla użytkownika PRZED zamknięciem
+        self.session.open(MessageBox, _("bg_started"), MessageBox.TYPE_INFO, timeout=3)
+        t = threading.Thread(target=self.do_import)
+        t.start()
+        self.close()
+
+    def do_mapping_action(self):
+        self.save_config_only()
+        self.log("--- MAP ---")
+        t = threading.Thread(target=self.do_mapping)
+        t.start()
+
+    # --- LOGIKA ---
+    def do_import(self):
         try:
-            url = self._get_url()
-            ext = ".xml"
-            if url.endswith(".gz"): ext = ".xml.gz"
-            xml_file = "/tmp/epg_temp" + ext
+            xml_file = self._download_source()
+            if not xml_file: return
             
-            self.log(f"Pobieranie...")
-            if not download_file(url, xml_file):
-                self.log(_("download_fail"))
-                GlobalState.is_running = False
-                return
-
             mapping = load_json(config.plugins.SimpleIPTV_EPG.mapping_file.value)
             if not mapping:
                 self.log(_("no_map"))
-                GlobalState.is_running = False
                 return
 
             self.log(_("import_start").format(len(mapping)))
@@ -283,48 +287,54 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
             injector = EPGInjector()
             
             count = 0
-            batch = 0
-            for ref, data in parser.load_events(mapping):
-                injector.add_event(ref, data)
+            batch_size = 0
+            
+            for service_ref, event_data in parser.load_events(mapping):
+                injector.add_event(service_ref, event_data)
                 count += 1
-                batch += 1
-                if batch >= 2000:
+                batch_size += 1
+                
+                # ZMNIEJSZAMY bufor i zwiększamy częstotliwość logowania
+                # Żebyś widział że "żyje"
+                if batch_size >= 100:
                     injector.commit()
-                    batch = 0
-                    if count % 2000 == 0: self.log(_("injected").format(count))
+                    batch_size = 0
+                    
+                    # Loguj co 200 wpisów (dużo częściej!)
+                    if count % 200 == 0:
+                        self.log(_("injected").format(count))
             
             injector.commit()
             self.log(_("success").format(count))
+            
+            # To okno wyskoczy zawsze, nawet jak wtyczka jest zamknięta
             reactor.callFromThread(self.ask_restart)
             
         except Exception as e:
-            self.log(f"ERROR: {e}")
-        
-        GlobalState.is_running = False
+            self.log(f"ERROR: {str(e)}")
+            import traceback
+            write_log(traceback.format_exc())
 
-    def worker_mapping(self):
+    def do_mapping(self):
         try:
-            url = self._get_url()
-            ext = ".xml"
-            if url.endswith(".gz"): ext = ".xml.gz"
-            xml_file = "/tmp/epg_temp" + ext
+            xml_file = self._download_source()
+            if not xml_file: return
             
-            self.log(f"Pobieranie...")
-            if not download_file(url, xml_file):
-                self.log(_("download_fail"))
-                GlobalState.is_running = False
-                return
-            
+            mapper = AutoMapper(log_callback=self.log)
             self.log(_("mapping_start"))
-            mapper = AutoMapper(log_callback=GlobalState.add_log)
-            new_map = mapper.generate_mapping(xml_file)
-            save_json(new_map, config.plugins.SimpleIPTV_EPG.mapping_file.value)
-            self.log(_("mapping_success").format(len(new_map)))
+            
+            mapping = mapper.generate_mapping(xml_file)
+            save_json(mapping, config.plugins.SimpleIPTV_EPG.mapping_file.value)
+            
+            self.log(_("mapping_success").format(len(mapping)))
             self.log(_("press_green"))
         except Exception as e:
-            self.log(f"ERROR: {e}")
-        GlobalState.is_running = False
+            self.log(f"ERROR: {str(e)}")
+
+    def save_config_only(self):
+        for x in self["config"].list: x[1].save()
+        config.plugins.SimpleIPTV_EPG.save()
 
 def main(session, **kwargs): session.open(IPTV_EPG_Config)
 def Plugins(**kwargs):
-    return [PluginDescriptor(name="Simple IPTV EPG v1.0", description="Importer EPG", where=PluginDescriptor.WHERE_PLUGINMENU, icon="plugin.png", fnc=main)]
+    return [PluginDescriptor(name="Simple IPTV EPG v1.0", description="Importer EPG (Multi-Source)", where=PluginDescriptor.WHERE_PLUGINMENU, icon="plugin.png", fnc=main)]
