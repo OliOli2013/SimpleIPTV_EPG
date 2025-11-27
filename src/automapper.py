@@ -10,7 +10,6 @@ CACHE_FILE = "/tmp/enigma_services.json"
 CACHE_MAX_AGE = 120  # Cache ważny 2 minuty
 
 def _load_services_cached(bouquets_path):
-    # Sprawdź cache
     if os.path.exists(CACHE_FILE):
         try:
             stat = os.stat(CACHE_FILE)
@@ -21,7 +20,6 @@ def _load_services_cached(bouquets_path):
 
     services = []
     try:
-        # Wczytaj wszystkie pliki userbouquet.*.tv
         files = [f for f in os.listdir(bouquets_path) if f.endswith('.tv') and 'userbouquet' in f]
     except OSError:
         return []
@@ -32,7 +30,6 @@ def _load_services_cached(bouquets_path):
             with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                 for line in f:
                     line = line.strip()
-                    # Obsługa 4097, 5001, 5002, 1:0
                     if line.startswith('#SERVICE '):
                         if any(x in line for x in ['4097:', '5001:', '5002:', '1:0:']):
                             parts = line.split(':')
@@ -47,7 +44,6 @@ def _load_services_cached(bouquets_path):
         except:
             continue
 
-    # Usuń duplikaty po full_ref
     seen = set()
     unique = []
     for s in services:
@@ -55,7 +51,6 @@ def _load_services_cached(bouquets_path):
             seen.add(s['full_ref'])
             unique.append(s)
 
-    # Zapisz do cache
     try:
         with open(CACHE_FILE, 'w', encoding='utf-8') as f:
             json.dump(unique, f)
@@ -68,6 +63,7 @@ class AutoMapper:
         self.bouquets_path = '/etc/enigma2/'
         self.log = log_callback
         
+        # --- ROZBUDOWANE ALIASY (Z DODANYM TVP3) ---
         self.CHANNEL_ALIASES = {
             "TVP1": ["TVP 1", "TVP1 HD", "TVP1 FHD", "TVP1 PL", "PROGRAM 1"],
             "TVP2": ["TVP 2", "TVP2 HD", "TVP2 FHD", "TVP 2 HD", "PROGRAM 2"],
@@ -76,7 +72,15 @@ class AutoMapper:
             "TVN 24": ["TVN24", "TVN 24 HD", "TVN24 BIS"],
             "EUROSPORT 1": ["EUROSPORT 1 HD", "EUROSPORT 1 FHD", "EUROSPORT 1 PL"],
             "CANAL+ SPORT": ["CANAL+ SPORT HD", "C+ SPORT", "CANAL PLUS SPORT"],
-            "HBO": ["HBO HD", "HBO FHD", "HBO PL"]
+            "HBO": ["HBO HD", "HBO FHD", "HBO PL"],
+            
+            # --- NOWE ALIASY REGIONALNE ---
+            "TVP3KRAKOW":   ["TVP3Krakow.pl", "TVP3KrakowHD", "TVP3Krakow"],
+            "TVP3WARSZAWA": ["TVP3Warszawa.pl", "TVP3WarsawHD"],
+            "TVP3GDANSK":   ["TVP3Gdansk.pl", "TVP3GdanskHD"],
+            "TVP3POZNAN":   ["TVP3Poznan.pl", "TVP3PoznanHD"],
+            "TVP3WROCLAW":  ["TVP3Wroclaw.pl", "TVP3WroclawHD"],
+            "TVP3KATOWICE": ["TVP3Katowice.pl", "TVP3KatowiceHD"]
         }
         
         self.junk_words = [
@@ -140,14 +144,11 @@ class AutoMapper:
                         
                         elem.clear()
                     elif elem.tag == 'programme':
-                        # PRZERWIJ CZYTANIE PLIKU PO DOTARCIU DO PROGRAMÓW
-                        # To ogromnie przyspiesza mapowanie!
                         break
         except Exception: pass
         return exact_map
     
     def find_best_match(self, iptv_name, xml_candidates, xml_index):
-        # Fuzzy matching za pomocą difflib
         match = get_close_matches(iptv_name, xml_candidates, n=1, cutoff=0.85)
         if match:
             return xml_index[match[0]]
@@ -181,11 +182,10 @@ class AutoMapper:
             if not xml_id:
                 canonical = alias_to_canonical.get(iptv_clean)
                 if canonical:
-                    # Szukamy formy kanonicznej w XML (np. "TVP1" po znalezieniu "TVP 1 HD")
                     canon_clean = self._simplify_name(canonical)
                     xml_id = xml_index.get(canon_clean)
 
-            # 3. Fuzzy (najwolniejsze, na końcu)
+            # 3. Fuzzy
             if not xml_id:
                 xml_id = self.find_best_match(iptv_clean, xml_candidates, xml_index)
 
@@ -196,7 +196,6 @@ class AutoMapper:
                 final_mapping[xml_id].append(service['full_ref'])
                 total_refs_count += 1
 
-        # Usuwanie duplikatów refów w listach
         for xml_id in final_mapping:
             final_mapping[xml_id] = list(dict.fromkeys(final_mapping[xml_id]))
 
