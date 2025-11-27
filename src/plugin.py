@@ -67,15 +67,13 @@ def _(key): return TR[key].get(lang_code, TR[key]["en"]) if key in TR else key
 # --- KONFIGURACJA ---
 config.plugins.SimpleIPTV_EPG = ConfigSubsection()
 
-# LISTA ŹRÓDEŁ (BEZ MBEBE)
 EPG_SOURCES = [
     ("https://epgshare01.online/epgshare01/epg_ripper_PL1.xml.gz", "EPG Share PL (Polska - Polecane)"),
-    ("https://epgshare01.online/epgshare01/epg_ripper_ALL_SOURCES1.xml.gz", "EPG Share ALL (Świat - Duży plik!)"),
+    ("https://epgshare01.online/epgshare01/epg_ripper_ALL_SOURCES1.xml.gz", "EPG Share ALL (Świat - Duży!)"),
     ("https://raw.githubusercontent.com/globetvapp/epg/main/Poland/poland2.xml.gz", "GlobeTV Polska (GitHub)"),
     ("https://iptv-epg.org/files/epg-pl.xml.gz", "IPTV-EPG.org (Polska)"),
     ("https://epg.ovh/pl.gz", "EPG OVH (PL - Basic)"),
     ("https://epg.ovh/plar.gz", "EPG OVH (PL + Opisy)"),
-    ("https://iptv-org.github.io/epg/guides/pl.xml", "IPTV-Org PL (XML)"),
     ("CUSTOM", "--- Custom URL ---")
 ]
 
@@ -156,7 +154,6 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
         self["label_status"] = Label("Log:")
         self["status"] = ScrollLabel(_("status_ready"))
         
-        # NAPRAWA CRASHA: Najpierw lista danych, potem ConfigListScreen
         self.list = []
         self.buildConfigList(init_phase=True)
         
@@ -186,7 +183,6 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
         except: pass
 
     def buildConfigList(self, init_phase=False):
-        """Tworzy listę. Jeśli init_phase=True, nie próbuje odświeżać GUI."""
         self.list = []
         self.list.append(getConfigListEntry(_("source_label"), config.plugins.SimpleIPTV_EPG.source_select))
         if config.plugins.SimpleIPTV_EPG.source_select.value == "CUSTOM":
@@ -292,8 +288,6 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
                 injector.add_event(ref, data)
                 count += 1
                 batch += 1
-                
-                # OPTYMALIZACJA: Bufor 2000, Logowanie co 2000
                 if batch >= 2000:
                     injector.commit()
                     batch = 0
