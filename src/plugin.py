@@ -29,7 +29,7 @@ def get_lang():
 lang_code = get_lang()
 
 TR = {
-    "header": {"pl": "Simple IPTV EPG v1.5", "en": "Simple IPTV EPG v1.5"},
+    "header": {"pl": "Simple IPTV EPG v1.0", "en": "Simple IPTV EPG v1.0"},
     "support_text": {"pl": "Wesprzyj rozwój wtyczki (Buy Coffee)", "en": "Support development"},
     "author_details": {
         "pl": "Twórca: Paweł Pawełek | Data: {} | email: msisytem@t.pl", 
@@ -59,7 +59,6 @@ def _(key): return TR[key].get(lang_code, TR[key]["en"]) if key in TR else key
 
 config.plugins.SimpleIPTV_EPG = ConfigSubsection()
 
-# --- USUNIĘTO MBEBE ---
 EPG_SOURCES = [
     ("https://epgshare01.online/epgshare01/epg_ripper_PL1.xml.gz", "EPG Share PL (Polska - Polecane)"),
     ("https://epgshare01.online/epgshare01/epg_ripper_ALL_SOURCES1.xml.gz", "EPG Share ALL (Świat - Duży plik)"),
@@ -138,7 +137,7 @@ class EPGWorker:
 
 class IPTV_EPG_Config(ConfigListScreen, Screen):
     skin = """
-        <screen name="IPTV_EPG_Config" position="center,center" size="900,680" title="Simple IPTV EPG v1.5">
+        <screen name="IPTV_EPG_Config" position="center,center" size="900,680" title="Simple IPTV EPG v1.0">
             <widget name="qrcode" position="20,10" size="130,130" transparent="1" alphatest="on" />
             <widget name="support_text" position="160,30" size="700,30" font="Regular;24" foregroundColor="#00ff00" transparent="1" />
             <widget name="author_info" position="160,70" size="700,50" font="Regular;20" foregroundColor="#aaaaaa" transparent="1" />
@@ -280,13 +279,14 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
 
     def check_github_update(self):
         self.log(_("check_update"))
-        GITHUB_VERSION_URL = "https://raw.githubusercontent.com/OliOli2013/SimpleIPTV_EPG/main/version.txt"
+        # POPRAWIONY LINK BEZ ROZSZERZENIA .TXT
+        GITHUB_VERSION_URL = "https://raw.githubusercontent.com/OliOli2013/SimpleIPTV_EPG/main/version"
         getPage(str.encode(GITHUB_VERSION_URL)).addCallback(self.github_callback).addErrback(self.github_error)
 
     def github_callback(self, data):
         try:
             remote_version = data.decode('utf-8').strip()
-            local_version = "1.5" # WERSJA LOKALNA
+            local_version = "1.0" # WERSJA ZGODNA Z GH
             
             if remote_version > local_version:
                 self.log(_("update_avail"))
@@ -300,11 +300,10 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
             self.log(f"Update Check Error: {str(e)}")
 
     def github_error(self, error):
-        # Bardziej przyjazny komunikat błędu
         err_msg = str(error)
         if "404" in err_msg:
-            self.log("BŁĄD 404: Nie znaleziono pliku version.txt na GitHubie!")
-            self.session.open(MessageBox, "Nie znaleziono pliku version.txt w repozytorium!\nSprawdź czy plik istnieje.", MessageBox.TYPE_ERROR)
+            self.log("BŁĄD 404: Nie znaleziono pliku wersji!")
+            self.session.open(MessageBox, "Nie znaleziono pliku 'version' w repozytorium!", MessageBox.TYPE_ERROR)
         else:
             self.log(f"GitHub Connection Error: {err_msg}")
             self.session.open(MessageBox, "Błąd połączenia z GitHub.\nSprawdź internet.", MessageBox.TYPE_ERROR)
