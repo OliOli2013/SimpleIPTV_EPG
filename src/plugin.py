@@ -14,10 +14,11 @@ import json
 from datetime import datetime
 from twisted.internet import reactor
 
+# Importy lokalne
 from .epgcore import EPGParser, EPGInjector, download_file
 from .automapper import AutoMapper
 
-# --- TŁUMACZENIA ---
+# --- SYSTEM TŁUMACZEŃ ---
 def get_lang():
     try:
         lang = language.getLanguage()
@@ -30,13 +31,18 @@ TR = {
     "header": {"pl": "Simple IPTV EPG v1.0", "en": "Simple IPTV EPG v1.0"},
     "support_text": {"pl": "Wesprzyj rozwój wtyczki (Buy Coffee)", "en": "Support development"},
     "source_label": {"pl": "Wybierz Źródło:", "en": "Select Source:"},
+    "custom_label": {"pl": "   >> Wpisz adres URL:", "en": "   >> Enter URL:"},
+    "map_file_label": {"pl": "Plik mapowania:", "en": "Mapping File:"},
     "btn_exit": {"pl": "Wyjdź", "en": "Exit"},
     "btn_import": {"pl": "Importuj", "en": "Import"},
     "btn_map": {"pl": "Mapuj", "en": "Map"},
-    "btn_bg": {"pl": "W TLE (Ukryj)", "en": "Background (Hide)"},
-    "status_ready": {"pl": "Gotowy. Wybierz źródło i wciśnij MAPUJ.\n", "en": "Ready. Select source and press MAP.\n"},
+    "btn_bg": {"pl": "Pobierz w tle", "en": "Background DL"},
+    "status_ready": {
+        "pl": "Gotowy. Wybierz źródło i wciśnij MAPUJ.\nZielony = Podgląd | Niebieski = W tle",
+        "en": "Ready. Select source and press MAP.\nGreen = View Log | Blue = Background"
+    },
     "help_text": {"pl": "Lewo/Prawo - zmiana źródła", "en": "Left/Right - change source"},
-    "downloading": {"pl": "Pobieranie pliku (może to potrwać)...", "en": "Downloading file..."},
+    "downloading": {"pl": "Pobieranie pliku (Czekaj...)...", "en": "Downloading file..."},
     "download_ok": {"pl": "Pobieranie zakończone.", "en": "Download finished."},
     "download_fail": {"pl": "BŁĄD POBIERANIA! Sprawdź adres.", "en": "DOWNLOAD ERROR! Check URL."},
     "no_map": {"pl": "BRAK MAPOWANIA! Najpierw użyj żółtego.", "en": "NO MAPPING! Use Yellow first."},
@@ -48,12 +54,12 @@ TR = {
         "en": "EPG Download successful!\nDo you want to restart GUI now?"
     },
     "bg_started": {
-        "pl": "Wtyczka pracuje w tle.\nMożesz oglądać TV. Poinformuję Cię o zakończeniu.",
-        "en": "Working in background.\nYou can watch TV. I will notify you when done."
+        "pl": "Uruchomiono w tle.\nMożesz oglądać TV. Poinformuję Cię o zakończeniu.",
+        "en": "Background task started.\nYou can watch TV. I will notify you when done."
     },
     "mapping_start": {"pl": "Analiza pliku i parowanie...", "en": "Analyzing file and mapping..."},
     "mapping_success": {"pl": "SUKCES: Połączono {} kanałów!", "en": "SUCCESS: Mapped {} channels!"},
-    "press_green": {"pl": "Teraz naciśnij ZIELONY.", "en": "Now press GREEN."}
+    "press_green": {"pl": "Teraz naciśnij ZIELONY lub NIEBIESKI.", "en": "Now press GREEN or BLUE."}
 }
 
 def _(key): return TR[key].get(lang_code, TR[key]["en"]) if key in TR else key
@@ -61,17 +67,19 @@ def _(key): return TR[key].get(lang_code, TR[key]["en"]) if key in TR else key
 # --- KONFIGURACJA ---
 config.plugins.SimpleIPTV_EPG = ConfigSubsection()
 
+# LISTA ŹRÓDEŁ (BEZ MBEBE)
 EPG_SOURCES = [
-    ("https://iptv-epg.org/files/epg-pl.xml.gz", "IPTV-EPG.org (Polska - Polecane)"),
-    ("https://epgshare01.online/epgshare01/epg_ripper_PL1.xml.gz", "EPG Share PL (Polska)"),
-    ("https://epgshare01.online/epgshare01/epg_ripper_ALL_SOURCES1.xml.gz", "EPG Share ALL (Świat - Duży!)"),
+    ("https://epgshare01.online/epgshare01/epg_ripper_PL1.xml.gz", "EPG Share PL (Polska - Polecane)"),
+    ("https://epgshare01.online/epgshare01/epg_ripper_ALL_SOURCES1.xml.gz", "EPG Share ALL (Świat - Duży plik!)"),
     ("https://raw.githubusercontent.com/globetvapp/epg/main/Poland/poland2.xml.gz", "GlobeTV Polska (GitHub)"),
+    ("https://iptv-epg.org/files/epg-pl.xml.gz", "IPTV-EPG.org (Polska)"),
     ("https://epg.ovh/pl.gz", "EPG OVH (PL - Basic)"),
     ("https://epg.ovh/plar.gz", "EPG OVH (PL + Opisy)"),
+    ("https://iptv-org.github.io/epg/guides/pl.xml", "IPTV-Org PL (XML)"),
     ("CUSTOM", "--- Custom URL ---")
 ]
 
-config.plugins.SimpleIPTV_EPG.source_select = ConfigSelection(default="https://iptv-epg.org/files/epg-pl.xml.gz", choices=EPG_SOURCES)
+config.plugins.SimpleIPTV_EPG.source_select = ConfigSelection(default="https://epgshare01.online/epgshare01/epg_ripper_PL1.xml.gz", choices=EPG_SOURCES)
 config.plugins.SimpleIPTV_EPG.custom_url = ConfigText(default="http://", fixed_size=False, visible_width=80)
 config.plugins.SimpleIPTV_EPG.mapping_file = ConfigText(default="/etc/enigma2/iptv_mapping.json", fixed_size=False)
 
@@ -148,8 +156,10 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
         self["label_status"] = Label("Log:")
         self["status"] = ScrollLabel(_("status_ready"))
         
+        # NAPRAWA CRASHA: Najpierw lista danych, potem ConfigListScreen
         self.list = []
-        self.buildConfigList()
+        self.buildConfigList(init_phase=True)
+        
         ConfigListScreen.__init__(self, self.list)
         
         self["actions"] = ActionMap(["SetupActions", "ColorActions", "DirectionActions"], {
@@ -165,7 +175,6 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
         
         self.onLayoutFinish.append(self.load_qr_code)
         
-        # Jeśli wtyczka już działa w tle, pokaż aktualny stan!
         if GlobalState.is_running:
             self.refresh_log()
 
@@ -176,13 +185,16 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
             if os.path.exists(qr_path): self["qrcode"].instance.setPixmapFromFile(qr_path)
         except: pass
 
-    def buildConfigList(self):
+    def buildConfigList(self, init_phase=False):
+        """Tworzy listę. Jeśli init_phase=True, nie próbuje odświeżać GUI."""
         self.list = []
         self.list.append(getConfigListEntry(_("source_label"), config.plugins.SimpleIPTV_EPG.source_select))
         if config.plugins.SimpleIPTV_EPG.source_select.value == "CUSTOM":
             self.list.append(getConfigListEntry(_("custom_label"), config.plugins.SimpleIPTV_EPG.custom_url))
         self.list.append(getConfigListEntry(_("map_file_label"), config.plugins.SimpleIPTV_EPG.mapping_file))
-        self["config"].setList(self.list)
+        
+        if not init_phase:
+            self["config"].setList(self.list)
 
     def keyLeft(self): ConfigListScreen.keyLeft(self); self.buildConfigList()
     def keyRight(self): ConfigListScreen.keyRight(self); self.buildConfigList()
@@ -207,12 +219,7 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
             from enigma import quitMainloop
             quitMainloop(3)
 
-    # --- AKCJE ---
     def hide_background(self):
-        """
-        Jeśli działa - ukrywa okno i pokazuje komunikat.
-        Jeśli NIE działa - uruchamia import i ukrywa.
-        """
         if GlobalState.is_running:
             self.session.open(MessageBox, _("bg_started"), MessageBox.TYPE_INFO, timeout=3)
             self.close()
@@ -221,9 +228,9 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
 
     def start_import(self, background=False):
         if GlobalState.is_running:
-            # Jeśli już działa, a klikamy zielony, po prostu nic nie rób (widzimy logi)
-            if not background: return
-            
+            self.log("Proces już trwa!")
+            return
+        
         self.save_config_only()
         GlobalState.is_running = True
         GlobalState.log_buffer = []
@@ -285,6 +292,8 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
                 injector.add_event(ref, data)
                 count += 1
                 batch += 1
+                
+                # OPTYMALIZACJA: Bufor 2000, Logowanie co 2000
                 if batch >= 2000:
                     injector.commit()
                     batch = 0
