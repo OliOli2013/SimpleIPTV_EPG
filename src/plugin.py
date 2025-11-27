@@ -28,7 +28,7 @@ def get_lang():
 lang_code = get_lang()
 
 TR = {
-    "header": {"pl": "Simple IPTV EPG v3.2 (Sources Update)", "en": "Simple IPTV EPG v3.2 (Sources Update)"},
+    "header": {"pl": "Simple IPTV EPG v1.0", "en": "Simple IPTV EPG v1.0"},
     "support_text": {"pl": "Wesprzyj rozwój wtyczki (Buy Coffee)", "en": "Support development"},
     "source_label": {"pl": "Wybierz Źródło:", "en": "Select Source:"},
     "custom_label": {"pl": "   >> Wpisz adres URL:", "en": "   >> Enter URL:"},
@@ -67,27 +67,14 @@ def _(key): return TR[key].get(lang_code, TR[key]["en"]) if key in TR else key
 # --- KONFIGURACJA ---
 config.plugins.SimpleIPTV_EPG = ConfigSubsection()
 
-# ZAKTUALIZOWANA LISTA ŹRÓDEŁ v3.2
 EPG_SOURCES = [
-    # Najlepsze polskie
     ("https://epgshare01.online/epgshare01/epg_ripper_PL1.xml.gz", "EPG Share PL (Polska - Polecane)"),
-    ("https://iptv-org.github.io/epg/guides/pl.xml", "IPTV-Org Polska (Oficjalne XML)"),
-    ("https://epg.ovh/pl.xml", "EPG.ovh Polska (XML)"),
-    ("https://epg.one/pl.xml", "EPG.one Polska (XML)"),
-    
-    # Światowe / Pakiety
-    ("https://epgshare01.online/epgshare01/epg_ripper_ALL_SOURCES1.xml.gz", "EPG Share ALL (Cały Świat - Duży!)"),
-    
-    # Zagraniczne (IPTV-Org)
-    ("https://iptv-org.github.io/epg/guides/us.xml", "IPTV-Org USA (Ameryka)"),
-    ("https://iptv-org.github.io/epg/guides/uk.xml", "IPTV-Org UK (Wielka Brytania)"),
-    ("https://iptv-org.github.io/epg/guides/de.xml", "IPTV-Org DE (Niemcy)"),
-    ("https://iptv-org.github.io/epg/guides/fr.xml", "IPTV-Org FR (Francja)"),
-    ("https://iptv-org.github.io/epg/guides/es.xml", "IPTV-Org ES (Hiszpania)"),
-    
-    # Inne
+    ("https://epgshare01.online/epgshare01/epg_ripper_ALL_SOURCES1.xml.gz", "EPG Share ALL (Świat - Duży!)"),
     ("https://raw.githubusercontent.com/globetvapp/epg/main/Poland/poland2.xml.gz", "GlobeTV Polska (GitHub)"),
-    ("CUSTOM", "--- Własny Adres URL ---")
+    ("https://iptv-epg.org/files/epg-pl.xml.gz", "IPTV-EPG.org (Polska)"),
+    ("https://epg.ovh/pl.gz", "EPG OVH (PL - Basic)"),
+    ("https://epg.ovh/plar.gz", "EPG OVH (PL + Opisy)"),
+    ("CUSTOM", "--- Custom URL ---")
 ]
 
 config.plugins.SimpleIPTV_EPG.source_select = ConfigSelection(default="https://epgshare01.online/epgshare01/epg_ripper_PL1.xml.gz", choices=EPG_SOURCES)
@@ -127,7 +114,7 @@ class GlobalState:
 
 class IPTV_EPG_Config(ConfigListScreen, Screen):
     skin = """
-        <screen name="IPTV_EPG_Config" position="center,center" size="900,650" title="Simple IPTV EPG v3.2">
+        <screen name="IPTV_EPG_Config" position="center,center" size="900,650" title="Simple IPTV EPG v1.0">
             <widget name="qrcode" position="20,10" size="130,130" transparent="1" alphatest="on" />
             <widget name="support_text" position="160,40" size="600,30" font="Regular;24" foregroundColor="#00ff00" transparent="1" />
             <widget name="author_info" position="160,80" size="600,25" font="Regular;18" foregroundColor="#aaaaaa" transparent="1" />
@@ -157,7 +144,7 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
         self["header_title"] = Label(_("header"))
         self["qrcode"] = Pixmap()
         self["support_text"] = Label(_("support_text"))
-        self["author_info"] = Label("v3.2 | by Pawel Pawełek | msisystem@t.pl")
+        self["author_info"] = Label("v1.0 | by Pawel Pawełek | msisystem@t.pl")
         
         self["key_red"] = Label(_("btn_exit"))
         self["key_green"] = Label(_("btn_import"))
@@ -209,7 +196,6 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
     def keyLeft(self): ConfigListScreen.keyLeft(self); self.updateConfigList()
     def keyRight(self): ConfigListScreen.keyRight(self); self.updateConfigList()
 
-    # --- LOGIKA ---
     def refresh_log(self):
         if GlobalState.is_running:
             try:
@@ -230,7 +216,6 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
             from enigma import quitMainloop
             quitMainloop(3)
 
-    # --- AKCJE ---
     def hide_background(self):
         if GlobalState.is_running:
             self.session.open(MessageBox, _("bg_started"), MessageBox.TYPE_INFO, timeout=3)
@@ -271,7 +256,6 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
         for x in self["config"].list: x[1].save()
         config.plugins.SimpleIPTV_EPG.save()
 
-    # --- WORKERY ---
     def _get_url(self):
         val = config.plugins.SimpleIPTV_EPG.source_select.value
         return config.plugins.SimpleIPTV_EPG.custom_url.value if val == "CUSTOM" else val
@@ -279,7 +263,6 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
     def worker_import(self):
         try:
             url = self._get_url()
-            # Automatyczne wykrywanie rozszerzenia dla pliku tymczasowego
             ext = ".xml"
             if url.endswith(".gz"): ext = ".xml.gz"
             xml_file = "/tmp/epg_temp" + ext
@@ -306,10 +289,14 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
                 injector.add_event(ref, data)
                 count += 1
                 batch += 1
-                if batch >= 150:
+                
+                # OPTYMALIZACJA PRĘDKOŚCI:
+                # Zwiększony bufor zapisu (z 250 na 2000)
+                # Zmniejszona częstotliwość logowania (z 300 na 2000)
+                if batch >= 2000:
                     injector.commit()
                     batch = 0
-                    if count % 300 == 0: self.log(_("injected").format(count))
+                    if count % 2000 == 0: self.log(_("injected").format(count))
             
             injector.commit()
             self.log(_("success").format(count))
@@ -345,4 +332,4 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
 
 def main(session, **kwargs): session.open(IPTV_EPG_Config)
 def Plugins(**kwargs):
-    return [PluginDescriptor(name="Simple IPTV EPG v3.2", description="Importer EPG (Multi-Source)", where=PluginDescriptor.WHERE_PLUGINMENU, icon="plugin.png", fnc=main)]
+    return [PluginDescriptor(name="Simple IPTV EPG v1.0", description="Importer EPG", where=PluginDescriptor.WHERE_PLUGINMENU, icon="plugin.png", fnc=main)]
