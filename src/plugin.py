@@ -29,7 +29,7 @@ def get_lang():
 lang_code = get_lang()
 
 TR = {
-    "header": {"pl": "Simple IPTV EPG v1.4", "en": "Simple IPTV EPG v1.4"},
+    "header": {"pl": "Simple IPTV EPG v1.5", "en": "Simple IPTV EPG v1.5"},
     "support_text": {"pl": "Wesprzyj rozwój wtyczki (Buy Coffee)", "en": "Support development"},
     "author_details": {
         "pl": "Twórca: Paweł Pawełek | Data: {} | email: msisytem@t.pl", 
@@ -47,7 +47,7 @@ TR = {
     "downloading": {"pl": "Pobieranie...", "en": "Downloading..."},
     "success": {"pl": "ZAKOŃCZONO! Pobrane zdarzenia: {}", "en": "DONE! Events loaded: {}"},
     "restart_title": {"pl": "EPG Zaktualizowane!\nRestart GUI?", "en": "EPG Updated!\nRestart GUI?"},
-    "mapping_start": {"pl": "Start mapowania (Fuzzy + Aliases)...", "en": "Starting mapping (Fuzzy + Aliases)..."},
+    "mapping_start": {"pl": "Start mapowania (Cache + Fast XML)...", "en": "Starting mapping (Cache + Fast XML)..."},
     "mapping_success": {"pl": "Mapowanie OK! Kanałów: {}", "en": "Mapping OK! Channels: {}"},
     "no_map": {"pl": "Brak pliku mapowania!", "en": "No mapping file!"},
     "check_update": {"pl": "Sprawdzanie wersji na GitHub...", "en": "Checking GitHub version..."},
@@ -59,13 +59,12 @@ def _(key): return TR[key].get(lang_code, TR[key]["en"]) if key in TR else key
 
 config.plugins.SimpleIPTV_EPG = ConfigSubsection()
 
-# --- ZAKTUALIZOWANA LISTA ŹRÓDEŁ ---
+# --- USUNIĘTO MBEBE ---
 EPG_SOURCES = [
     ("https://epgshare01.online/epgshare01/epg_ripper_PL1.xml.gz", "EPG Share PL (Polska - Polecane)"),
     ("https://epgshare01.online/epgshare01/epg_ripper_ALL_SOURCES1.xml.gz", "EPG Share ALL (Świat - Duży plik)"),
     ("https://raw.githubusercontent.com/globetvapp/epg/main/Poland/poland2.xml.gz", "GlobeTV Polska (GitHub)"),
     ("https://iptv-epg.org/files/epg-pl.xml.gz", "IPTV-EPG.org (Polska)"),
-    ("http://mbebe.j.pl/epg/mbebe.xml.gz", "Mbebe (Główny - j.pl)"),
     ("https://epg.ovh/pl.gz", "EPG OVH (PL - Basic)"),
     ("https://epg.ovh/plar.gz", "EPG OVH (PL + Opisy)"),
     ("https://raw.githubusercontent.com/matthuisman/i.mjh.nz/master/PlutoTV/pl.xml.gz", "PlutoTV PL (GitHub)"),
@@ -110,7 +109,6 @@ class EPGWorker:
         if callback_log: callback_log(_("downloading"))
         write_log("Start Download...")
         
-        # Używa teraz poprawionej funkcji download_file z retry
         if not download_file(url, temp_path, retries=3):
             if callback_log: callback_log("Download Error!")
             return False
@@ -140,29 +138,21 @@ class EPGWorker:
 
 class IPTV_EPG_Config(ConfigListScreen, Screen):
     skin = """
-        <screen name="IPTV_EPG_Config" position="center,center" size="900,680" title="Simple IPTV EPG v1.4">
+        <screen name="IPTV_EPG_Config" position="center,center" size="900,680" title="Simple IPTV EPG v1.5">
             <widget name="qrcode" position="20,10" size="130,130" transparent="1" alphatest="on" />
             <widget name="support_text" position="160,30" size="700,30" font="Regular;24" foregroundColor="#00ff00" transparent="1" />
             <widget name="author_info" position="160,70" size="700,50" font="Regular;20" foregroundColor="#aaaaaa" transparent="1" />
-            
             <widget name="header_title" position="20,150" size="860,50" font="Regular;34" halign="center" valign="center" foregroundColor="#fcc400" backgroundColor="#202020" transparent="1" />
-            
             <widget name="config" position="20,210" size="860,150" font="Regular;22" itemHeight="35" scrollbarMode="showOnDemand" />
-            
             <widget name="label_status" position="20,380" size="860,30" font="Regular;22" foregroundColor="#00aaff" />
             <widget name="status" position="20,415" size="860,190" font="Regular;18" foregroundColor="#dddddd" backgroundColor="#101010" />
-            
             <eLabel position="20,620" size="860,2" backgroundColor="#555555" />
-
             <ePixmap pixmap="skin_default/buttons/red.png" position="30,630" size="30,40" alphatest="on" />
             <widget name="key_red" position="65,630" zPosition="1" size="180,40" font="Regular;20" valign="center" transparent="1" />
-            
             <ePixmap pixmap="skin_default/buttons/green.png" position="250,630" size="30,40" alphatest="on" />
             <widget name="key_green" position="285,630" zPosition="1" size="180,40" font="Regular;20" valign="center" transparent="1" />
-            
             <ePixmap pixmap="skin_default/buttons/yellow.png" position="470,630" size="30,40" alphatest="on" />
             <widget name="key_yellow" position="505,630" zPosition="1" size="180,40" font="Regular;20" valign="center" transparent="1" />
-
             <ePixmap pixmap="skin_default/buttons/blue.png" position="690,630" size="30,40" alphatest="on" />
             <widget name="key_blue" position="725,630" zPosition="1" size="180,40" font="Regular;20" valign="center" transparent="1" />
         </screen>
@@ -274,7 +264,6 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
             temp_path = "/tmp/epg_temp" + ext
             
             self.log(_("downloading"))
-            # Retry logic jest już w epgcore.download_file
             if not download_file(url, temp_path, retries=3):
                 self.log("Download FAIL")
                 return
@@ -289,7 +278,6 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
         except Exception as e:
             self.log(f"ERROR: {e}")
 
-    # --- CHECK UPDATE GITHUB (NAPRAWIONE) ---
     def check_github_update(self):
         self.log(_("check_update"))
         GITHUB_VERSION_URL = "https://raw.githubusercontent.com/OliOli2013/SimpleIPTV_EPG/main/version.txt"
@@ -298,7 +286,7 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
     def github_callback(self, data):
         try:
             remote_version = data.decode('utf-8').strip()
-            local_version = "1.4" # ZAKTUALIZOWANA WERSJA
+            local_version = "1.5" # WERSJA LOKALNA
             
             if remote_version > local_version:
                 self.log(_("update_avail"))
@@ -312,7 +300,14 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
             self.log(f"Update Check Error: {str(e)}")
 
     def github_error(self, error):
-        self.log(f"GitHub Connection Error: {str(error)}")
+        # Bardziej przyjazny komunikat błędu
+        err_msg = str(error)
+        if "404" in err_msg:
+            self.log("BŁĄD 404: Nie znaleziono pliku version.txt na GitHubie!")
+            self.session.open(MessageBox, "Nie znaleziono pliku version.txt w repozytorium!\nSprawdź czy plik istnieje.", MessageBox.TYPE_ERROR)
+        else:
+            self.log(f"GitHub Connection Error: {err_msg}")
+            self.session.open(MessageBox, "Błąd połączenia z GitHub.\nSprawdź internet.", MessageBox.TYPE_ERROR)
 
 def AutoUpdateCheck():
     if config.plugins.SimpleIPTV_EPG.auto_update.value:
