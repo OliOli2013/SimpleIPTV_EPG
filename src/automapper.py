@@ -9,44 +9,46 @@ class AutoMapper:
         self.bouquets_path = '/etc/enigma2/'
         self.log = log_callback
         
-        # Rozszerzona lista śmieci do wycięcia
+        # Słowa ignorowane (rozszerzona lista)
         self.junk_words = [
-            'HD', 'FHD', 'UHD', '4K', '8K', 'SD', 'HEVC', 'H265', 'H264', 'AAC',
+            'HD', 'FHD', 'UHD', '4K', '8K', 'SD', 'HEVC', 'H265', 'H264', 'AAC', 'AC3',
             'PL', 'POL', '(PL)', '[PL]', '|PL|', 'PL.', 'PL:', 'PL-',
             'VIP', 'RAW', 'VOD', 'XXX', 'PREMIUM', 'BACKUP', 'UPDATE',
-            'SUB', 'DUB', 'LEKTOR', 'NAPISY',
-            'TV', 'CHANNEL', 'STREAM', 'LIVE',
+            'SUB', 'DUB', 'LEKTOR', 'NAPISY', 'MULTI',
+            'TV', 'CHANNEL', 'STREAM', 'LIVE', '24/7',
             'PPV', 'PPV1', 'PPV2', 'PPV3', 'PPV4', 'PPV5', 'PPV6',
-            'OTV', 'INFO', 'NA', 'ZYWO', 'REC', 'TIMESHIFT',
+            'OTV', 'INFO', 'NA', 'ZYWO', 'REC', 'TIMESHIFT', 'CATCHUP',
             'MAC', 'PORTAL', 'KANALY', 'KANAŁY', 'DLA', 'DZIECI',
-            'LOW', 'HIGH', 'ORIGINAL', 'SEQ', 'H.', 'P.', 'S.'
+            'LOW', 'HIGH', 'ORIGINAL', 'SEQ', 'H.', 'P.', 'S.',
+            'HOME', 'OFFICE', 'MOBILE'
         ]
 
     def _simplify_name(self, name):
+        """Czyści nazwę, ale zachowuje cyfry, aby odróżnić TVP1 od TVP2."""
         try:
             if not name: return ""
             if isinstance(name, bytes): name = name.decode('utf-8', 'ignore')
             
             name = name.upper()
-            
-            # Zamieniamy + i &
+            # Zamieniamy + na PLUS tylko jeśli jest sklejony (Canal+)
             name = name.replace('+', 'PLUS').replace('&', 'AND')
             
-            # Usuwamy cyfry na początku (np. "1. TVP 1" -> "TVP 1")
-            name = re.sub(r'^\d+[\.\)\s]+', '', name)
+            # Usuwamy nawiasy i zawartość jeśli to typowe śmieci, ale zostawiamy jeśli to ważna część
+            name = re.sub(r'\[.*?\]', '', name)
+            name = re.sub(r'\(PL\)', '', name)
             
             # Usuwamy znaki specjalne
-            name = re.sub(r'[#|_.\-\[\]\(\):]', ' ', name)
+            name = re.sub(r'[#|_.\-\(\):]', ' ', name)
             
             parts = name.split()
-            # Filtrujemy słowa śmieciowe i pojedyncze litery (chyba że to cyfra)
             clean_parts = []
             for word in parts:
                 if word not in self.junk_words:
-                    # Zachowaj słowa dłuższe niż 1 znak LUB jeśli są cyfrą (np. "1" w TVP 1)
+                    # Zachowaj słowo jeśli ma więcej niż 1 znak LUB jest cyfrą
                     if len(word) > 1 or word.isdigit():
                         clean_parts.append(word)
             
+            # Sklejamy bez spacji (np. POLSATSPORT)
             return "".join(clean_parts)
         except:
             return ""
@@ -67,7 +69,6 @@ class AutoMapper:
                             parts = line.split(':')
                             potential_name = parts[-1]
                             
-                            # Filtrujemy nagłówki list
                             if "###" in potential_name or "---" in potential_name: continue
                             if len(potential_name) < 2: continue
                                 
@@ -80,9 +81,7 @@ class AutoMapper:
         return services
 
     def get_xmltv_channels(self, xml_path):
-        """Zwraca słownik { 'ZNORMALIZOWANA_NAZWA': 'XML_ID' }."""
         exact_map = {}
-        
         if not os.path.exists(xml_path): return {}
         
         opener = gzip.open if xml_path.endswith('.gz') else open
@@ -100,20 +99,20 @@ class AutoMapper:
                                 display_name = child.text
                                 break
                         
+                        # Tworzymy klucze mapowania
                         candidates = []
                         if display_name: candidates.append(self._simplify_name(display_name))
-                        # Dodajemy też ID jako kandydata (często lepsze niż nazwa)
                         candidates.append(self._simplify_name(xml_id.replace('.pl', '')))
                         
                         for clean_name in candidates:
-                            if clean_name and len(clean_name) > 1:
+                            if len(clean_name) > 1:
+                                # Ważne: jeśli duplikat nazwy w XML, nie nadpisuj bezmyślnie
                                 exact_map[clean_name] = xml_id
                                 
                         elem.clear()
                     elif elem.tag == 'programme':
                         break
         except Exception: pass
-            
         return exact_map
 
     def generate_mapping(self, xml_path):
@@ -121,22 +120,17 @@ class AutoMapper:
         if self.log: self.log(f"Analiza {len(e2_services)} kanałów z tunera...")
         
         xml_index = self.get_xmltv_channels(xml_path)
-        
-        # ZMIANA: Słownik przechowuje LISTY, a nie pojedyncze wartości
-        # { "TVP1.pl": ["ref1", "ref2", "ref3"] }
         final_mapping = {}
         
         matched_count = 0
-        total_refs_count = 0 # Licznik ile w sumie kanałów podpięliśmy
-
-        if self.log: self.log("Grupowanie kanałów (Multi-Match)...")
-
         processed = 0
         total = len(e2_services)
 
+        if self.log: self.log("Inteligentne parowanie...")
+
         for service in e2_services:
             processed += 1
-            if self.log and processed % 2000 == 0:
+            if self.log and processed % 1000 == 0:
                 self.log(f"Przetworzono {processed}/{total}...")
 
             try:
@@ -145,31 +139,31 @@ class AutoMapper:
 
                 xml_id = None
 
-                # 1. Dokładne trafienie
+                # 1. Dokładne trafienie (Priorytet)
+                # TVP1 == TVP1
                 if iptv_clean in xml_index:
                     xml_id = xml_index[iptv_clean]
                 
-                # 2. Zawieranie (jeśli XML jest częścią nazwy IPTV)
+                # 2. Zawieranie (Tylko bardzo ostrożne)
+                # Zapobiega matchowaniu "TVP1" do "TVP10"
                 if not xml_id:
                     for xml_name, xid in xml_index.items():
-                        # Warunek: xml_name musi być dłuższe niż 2 znaki
-                        if len(xml_name) > 2 and xml_name in iptv_clean:
-                            xml_id = xid
-                            break
+                        # XML musi być długi (min 4 znaki) i musi być wewnątrz nazwy IPTV
+                        # ORAZ długości nie mogą się drastycznie różnić
+                        if len(xml_name) > 3 and xml_name in iptv_clean:
+                            # Sprawdź czy nie dopasowaliśmy "TVP1" do "TVP15" (końcówka)
+                            if len(iptv_clean) - len(xml_name) < 3:
+                                xml_id = xid
+                                break
                 
-                # Jeśli znaleziono dopasowanie
                 if xml_id:
                     if xml_id not in final_mapping:
                         final_mapping[xml_id] = []
-                        matched_count += 1 # To liczy unikalne kanały XML
+                        matched_count += 1
                     
-                    # Dodaj referencję do listy dla tego kanału
                     final_mapping[xml_id].append(service['full_ref'])
-                    total_refs_count += 1
 
             except Exception: continue
 
-        if self.log: self.log(f"Unikalnych EPG: {matched_count}")
-        if self.log: self.log(f"Przypisanych kanałów: {total_refs_count}!")
-        
+        if self.log: self.log(f"Unikalne EPG: {matched_count}")
         return final_mapping
