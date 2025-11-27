@@ -1,3 +1,5 @@
+v1.1: Optimized threading (ThreadPoolExecutor), fixed memory leaks in XML parser, added download timeouts, and implemented batch processing for SAT fallback to improve speed and stability.
+
 v1.0 (2025-11-27)
 - Pierwsze oficjalne wydanie (First public release).
 - Obsługa wielu źródeł EPG (EPG Share, Mbebe, OVH, GlobeTV).
