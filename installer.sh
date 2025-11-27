@@ -50,8 +50,12 @@ if [ -f main.zip ]; then
     cp -r SimpleIPTV_EPG-main/src/* "$PLUGIN_PATH/"
     
     # Kopiowanie changeloga i wersji do głównego katalogu wtyczki (opcjonalnie)
-    cp SimpleIPTV_EPG-main/version "$PLUGIN_PATH/"
-    cp SimpleIPTV_EPG-main/CHANGELOG.txt "$PLUGIN_PATH/"
+    if [ -f SimpleIPTV_EPG-main/version ]; then
+        cp SimpleIPTV_EPG-main/version "$PLUGIN_PATH/"
+    fi
+    if [ -f SimpleIPTV_EPG-main/CHANGELOG.txt ]; then
+        cp SimpleIPTV_EPG-main/CHANGELOG.txt "$PLUGIN_PATH/"
+    fi
 
     # 5. Nadawanie uprawnień (KLUCZOWE)
     echo "🔑 Nadawanie uprawnień..."
