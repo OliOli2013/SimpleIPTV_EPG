@@ -3,15 +3,71 @@ import re
 import xml.etree.cElementTree as ET
 import gzip
 import json
+import time
 from difflib import get_close_matches
+
+CACHE_FILE = "/tmp/enigma_services.json"
+CACHE_MAX_AGE = 120  # Cache ważny 2 minuty
+
+def _load_services_cached(bouquets_path):
+    # Sprawdź cache
+    if os.path.exists(CACHE_FILE):
+        try:
+            stat = os.stat(CACHE_FILE)
+            if time.time() - stat.st_mtime < CACHE_MAX_AGE:
+                with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except: pass
+
+    services = []
+    try:
+        # Wczytaj wszystkie pliki userbouquet.*.tv
+        files = [f for f in os.listdir(bouquets_path) if f.endswith('.tv') and 'userbouquet' in f]
+    except OSError:
+        return []
+
+    for filename in files:
+        try:
+            path = os.path.join(bouquets_path, filename)
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    line = line.strip()
+                    # Obsługa 4097, 5001, 5002, 1:0
+                    if line.startswith('#SERVICE '):
+                        if any(x in line for x in ['4097:', '5001:', '5002:', '1:0:']):
+                            parts = line.split(':')
+                            potential_name = parts[-1]
+                            if "###" in potential_name or "---" in potential_name or len(potential_name) < 2:
+                                continue
+                            ref_clean = line.replace('#SERVICE ', '').strip()
+                            services.append({'full_ref': ref_clean, 'name': potential_name})
+                    elif line.startswith('#DESCRIPTION'):
+                        if services and "###" not in line:
+                            services[-1]['name'] = line.replace('#DESCRIPTION', '').strip()
+        except:
+            continue
+
+    # Usuń duplikaty po full_ref
+    seen = set()
+    unique = []
+    for s in services:
+        if s['full_ref'] not in seen:
+            seen.add(s['full_ref'])
+            unique.append(s)
+
+    # Zapisz do cache
+    try:
+        with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(unique, f)
+    except: pass
+
+    return unique
 
 class AutoMapper:
     def __init__(self, log_callback=None):
         self.bouquets_path = '/etc/enigma2/'
         self.log = log_callback
         
-        # --- SŁOWNIK ALIASÓW ---
-        # Pomaga połączyć nazwy, które nie mają ze sobą nic wspólnego tekstowo
         self.CHANNEL_ALIASES = {
             "TVP1": ["TVP 1", "TVP1 HD", "TVP1 FHD", "TVP1 PL", "PROGRAM 1"],
             "TVP2": ["TVP 2", "TVP2 HD", "TVP2 FHD", "TVP 2 HD", "PROGRAM 2"],
@@ -23,7 +79,6 @@ class AutoMapper:
             "HBO": ["HBO HD", "HBO FHD", "HBO PL"]
         }
         
-        # Słowa do usunięcia (bez zmian)
         self.junk_words = [
             'HD', 'FHD', 'UHD', '4K', '8K', 'SD', 'HEVC', 'H265', 'H264', 'AVC', 'AAC', 'AC3', 'DD+',
             'FULL', 'FULLHD', 'ULTRA', 'ULTRAHD', 'HIGH', 'LOW', 'QUALITY', 'BITRATE', 'HDR', '1080', '720',
@@ -36,7 +91,7 @@ class AutoMapper:
             'SEQ', 'H.', 'P.', 'S.', 'M3U', 'LIST', 'PLAYLIST', 'PLUS', '+'
         ]
 
-    def _normalize_string(self, text):
+    def _simplify_name(self, text):
         if not text: return ""
         if isinstance(text, bytes): text = text.decode('utf-8', 'ignore')
         text = text.upper()
@@ -49,112 +104,104 @@ class AutoMapper:
         return "".join(clean_words)
 
     def get_enigma_services(self):
-        services = []
-        try:
-            files = [f for f in os.listdir(self.bouquets_path) if f.endswith('.tv') and 'userbouquet' in f]
-        except: return []
-
-        for filename in files:
-            try:
-                path = os.path.join(self.bouquets_path, filename)
-                with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line.startswith('#SERVICE '):
-                            if any(x in line for x in ['4097:', '5001:', '5002:', '1:0:']):
-                                parts = line.split(':')
-                                potential_name = parts[-1]
-                                if "###" in potential_name or "---" in potential_name: continue
-                                ref_clean = line.replace('#SERVICE ', '').strip()
-                                services.append({'full_ref': ref_clean, 'name': potential_name})
-                        elif line.startswith('#DESCRIPTION'):
-                            if services and "###" not in line and "---" not in line:
-                                services[-1]['name'] = line.replace('#DESCRIPTION', '').strip()
-            except: continue
+        services = _load_services_cached(self.bouquets_path)
+        if self.log:
+            self.log(f"Załadowano {len(services)} kanałów (z cache/dysku)")
         return services
 
-    def get_xmltv_channels_index(self, xml_path):
-        index = {}
-        if not os.path.exists(xml_path): return {}
+    def get_xmltv_channels(self, xml_path):
+        exact_map = {}
+        if not os.path.exists(xml_path):
+            return {}
         opener = gzip.open if xml_path.endswith('.gz') else open
         
-        if self.log: self.log("Indeksowanie XMLTV...")
+        if self.log: self.log("Indeksowanie XML (Szybki tryb)...")
         try:
             with opener(xml_path, 'rb') as f:
                 context = ET.iterparse(f, events=("end",))
                 for event, elem in context:
                     if elem.tag == 'channel':
                         xml_id = elem.get('id')
-                        disp = ""
+                        display_name = ""
                         for child in elem:
-                            if child.tag == 'display-name' and child.text:
-                                disp = child.text
+                            if child.tag == 'display-name':
+                                display_name = child.text
                                 break
                         
-                        # Zapisz zarówno fingerprint jak i oryginalną nazwę dla Fuzzy Logic
-                        fp = self._normalize_string(disp if disp else xml_id)
-                        if fp:
-                            index[fp] = xml_id
-                        
-                        # Dodaj też surowy ID jako klucz, czasem pomaga
+                        candidates = []
+                        if display_name:
+                            candidates.append(self._simplify_name(display_name))
                         if xml_id:
-                            index[xml_id.upper()] = xml_id
-                            
+                            candidates.append(self._simplify_name(xml_id.replace('.pl', '')))
+                        
+                        for clean_name in candidates:
+                            if clean_name and len(clean_name) > 1:
+                                exact_map[clean_name] = xml_id
+                        
                         elem.clear()
-                    elif elem.tag == 'programme': break
-        except: pass
-        return index
+                    elif elem.tag == 'programme':
+                        # PRZERWIJ CZYTANIE PLIKU PO DOTARCIU DO PROGRAMÓW
+                        # To ogromnie przyspiesza mapowanie!
+                        break
+        except Exception: pass
+        return exact_map
+    
+    def find_best_match(self, iptv_name, xml_candidates, xml_index):
+        # Fuzzy matching za pomocą difflib
+        match = get_close_matches(iptv_name, xml_candidates, n=1, cutoff=0.85)
+        if match:
+            return xml_index[match[0]]
+        return None
 
     def generate_mapping(self, xml_path):
         e2_services = self.get_enigma_services()
-        xml_index = self.get_xmltv_channels_index(xml_path)
-        
-        # Lista wszystkich kluczy XML do fuzzy matchingu
+        xml_index = self.get_xmltv_channels(xml_path)
         xml_candidates = list(xml_index.keys())
-        
+
         final_mapping = {}
         matched_count = 0
+        total_refs_count = 0
+
+        # Budowanie Inverse Map dla Aliasów
+        alias_to_canonical = {}
+        for canonical, aliases in self.CHANNEL_ALIASES.items():
+            for a in aliases:
+                alias_to_canonical[self._simplify_name(a)] = canonical
         
-        if self.log: self.log(f"Parowanie {len(e2_services)} kanałów (Fuzzy+Alias)...")
+        if self.log: self.log(f"Mapowanie {len(e2_services)} kanałów...")
 
         for service in e2_services:
-            iptv_name_raw = service['name'].upper()
-            iptv_fp = self._normalize_string(iptv_name_raw)
-            
-            if len(iptv_fp) < 2: continue
-            
-            best_xml_id = None
+            iptv_clean = self._simplify_name(service['name'])
+            if len(iptv_clean) < 2: continue
 
-            # 1. Dokładne trafienie (Fingerprint)
-            if iptv_fp in xml_index:
-                best_xml_id = xml_index[iptv_fp]
+            # 1. Dokładne trafienie
+            xml_id = xml_index.get(iptv_clean)
 
-            # 2. Aliasy (jeśli brak dokładnego)
-            if not best_xml_id:
-                for canonical, aliases in self.CHANNEL_ALIASES.items():
-                    # Sprawdź czy nazwa IPTV jest w aliasach
-                    found_alias = False
-                    for alias in aliases:
-                        if alias in iptv_name_raw: # Np. "TVP 1" w "TVP 1 HD"
-                             # Teraz szukaj canonical (np. TVP1) w XML
-                             canon_fp = self._normalize_string(canonical)
-                             if canon_fp in xml_index:
-                                 best_xml_id = xml_index[canon_fp]
-                                 found_alias = True
-                                 break
-                    if found_alias: break
+            # 2. Aliasy
+            if not xml_id:
+                canonical = alias_to_canonical.get(iptv_clean)
+                if canonical:
+                    # Szukamy formy kanonicznej w XML (np. "TVP1" po znalezieniu "TVP 1 HD")
+                    canon_clean = self._simplify_name(canonical)
+                    xml_id = xml_index.get(canon_clean)
 
-            # 3. Fuzzy Matching (difflib) - wolne, ale skuteczne
-            if not best_xml_id:
-                # Szukamy 1 najlepszego dopasowania z pewnością > 0.85
-                match = get_close_matches(iptv_fp, xml_candidates, n=1, cutoff=0.85)
-                if match:
-                    best_xml_id = xml_index[match[0]]
+            # 3. Fuzzy (najwolniejsze, na końcu)
+            if not xml_id:
+                xml_id = self.find_best_match(iptv_clean, xml_candidates, xml_index)
 
-            if best_xml_id:
-                if best_xml_id not in final_mapping:
-                    final_mapping[best_xml_id] = []
+            if xml_id:
+                if xml_id not in final_mapping:
+                    final_mapping[xml_id] = []
                     matched_count += 1
-                final_mapping[best_xml_id].append(service['full_ref'])
+                final_mapping[xml_id].append(service['full_ref'])
+                total_refs_count += 1
 
+        # Usuwanie duplikatów refów w listach
+        for xml_id in final_mapping:
+            final_mapping[xml_id] = list(dict.fromkeys(final_mapping[xml_id]))
+
+        if self.log:
+            self.log(f"Unikalnych EPG: {matched_count}")
+            self.log(f"Przypisanych kanałów: {total_refs_count}")
+            
         return final_mapping
