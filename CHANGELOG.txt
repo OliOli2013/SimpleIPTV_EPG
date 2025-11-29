@@ -1,3 +1,10 @@
+v1.2 Release Notes:
+- 🌍 ADDED: International EPG Sources (UK, DE, IT, ES, FR, TR, PT, Global)
+- 🚀 NEW: "Fast Mapper" Engine - mapping is now instant (seconds instead of minutes)
+- 🇺🇸 IMPROVED: Professional English translation rewrite
+- 🧠 SMART: Enhanced channel matching (ignores tags like HEVC, VIP, FHD, RAW)
+- 🔧 FIX: Improved SAT->IPTV linking logic & updated default sources
+
 v1.1: Optimized threading (ThreadPoolExecutor), fixed memory leaks in XML parser, added download timeouts, and implemented batch processing for SAT fallback to improve speed and stability.
 
 v1.0 (2025-11-27)
