@@ -18,15 +18,18 @@ import shutil
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
-# Importy lokalne - upewnij się, że epgcore i automapper są zaktualizowane!
-from .epgcore import EPGParser, EPGInjector, download_file, inject_sat_fallback, inject_sat_clone_fallback, check_url_alive
+# Local imports - ensure epgcore.py and automapper.py are up to date!
+from .epgcore import EPGParser, EPGInjector, download_file, inject_sat_fallback, inject_sat_clone_by_name, check_url_alive
 from .automapper import AutoMapper, _load_services_cached
 
-# --- KONFIGURACJA GIT ---
+# --- GITHUB CONFIG ---
 GITHUB_USER = "OliOli2013"
 GITHUB_REPO = "SimpleIPTV_EPG"
 GITHUB_BRANCH = "main"
 GITHUB_BASE_URL = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/{GITHUB_BRANCH}/"
+
+# --- VERSION ---
+PLUGIN_VERSION = "1.2"
 
 def get_lang():
     try:
@@ -36,55 +39,163 @@ def get_lang():
 
 lang_code = get_lang()
 
+# --- TRANSLATIONS (Professional English & Polish) ---
 TR = {
-    "header": {"pl": "Simple IPTV EPG v1.1", "en": "Simple IPTV EPG v1.1"},
-    "support_text": {"pl": "Wesprzyj rozwój wtyczki (Buy Coffee)", "en": "Support development"},
+    "header": {
+        "pl": f"Simple IPTV EPG v{PLUGIN_VERSION} (Fast)", 
+        "en": f"Simple IPTV EPG v{PLUGIN_VERSION} (Fast)"
+    },
+    "support_text": {
+        "pl": "Wesprzyj rozwój wtyczki (Buy Coffee)", 
+        "en": "Support development (Buy Coffee)"
+    },
     "author_details": {
         "pl": "Twórca: Paweł Pawełek | Data: {} | email: msisytem@t.pl", 
-        "en": "Creator: Paweł Pawełek | Date: {} | email: msisytem@t.pl"
+        "en": "Author: Paweł Pawełek | Date: {} | email: msisytem@t.pl"
     },
-    "help_arrows": {"pl": "< Zmień źródło strzałkami Lewo/Prawo >", "en": "< Change source with Left/Right arrows >"},
-    "source_label": {"pl": "Wybierz Źródło:", "en": "Select Source:"},
-    "custom_label": {"pl": "   >> Wpisz adres URL:", "en": "   >> Enter URL:"},
-    "map_file_label": {"pl": "Plik mapowania:", "en": "Mapping File:"},
-    "autoupdate_label": {"pl": "Auto-Aktualizacja (co 24h):", "en": "Auto-Update (every 24h):"},
-    "btn_exit": {"pl": "Wyjdź", "en": "Exit"},
-    "btn_import": {"pl": "Importuj", "en": "Import"},
-    "btn_map": {"pl": "Mapuj", "en": "Map"},
-    "btn_update": {"pl": "Aktualizuj (GitHub)", "en": "Update (GitHub)"},
-    "status_ready": {"pl": "Gotowy. Wybierz opcje.\n", "en": "Ready. Select options.\n"},
-    "downloading": {"pl": "Pobieranie...", "en": "Downloading..."},
-    "success": {"pl": "ZAKOŃCZONO! XML: {} | SAT: {}", "en": "DONE! XML: {} | SAT: {}"},
-    "restart_title": {"pl": "EPG Zaktualizowane!\nRestart GUI?", "en": "EPG Updated!\nRestart GUI?"},
-    "mapping_start": {"pl": "Start mapowania", "en": "Starting mapping"},
-    "mapping_success": {"pl": "Mapowanie OK! Kanałów: {}", "en": "Mapping OK! Channels: {}"},
-    "no_map": {"pl": "Brak pliku mapowania!", "en": "No mapping file!"},
-    "check_update": {"pl": "Sprawdzanie wersji na GitHub...", "en": "Checking GitHub version..."},
-    "update_ok": {"pl": "Masz najnowszą wersję.", "en": "You have the latest version."},
-    "update_avail": {"pl": "Dostępna nowa wersja: {}\nCzy chcesz zaktualizować wtyczkę teraz?", "en": "New version available: {}\nDo you want to update plugin now?"},
-    "update_start": {"pl": "Pobieranie aktualizacji...", "en": "Downloading update..."},
-    "update_done": {"pl": "Aktualizacja zakończona sukcesem!\nWymagany restart GUI.", "en": "Update successful!\nGUI Restart required."},
-    "update_fail": {"pl": "Aktualizacja nieudana. Sprawdź logi.", "en": "Update failed. Check logs."},
-    "timeout_error": {"pl": "BŁĄD: Przekroczono limit czasu (5 min)!", "en": "ERROR: Timeout exceeded (5 min)!"},
-    "import_crash": {"pl": "CRASH: Błąd krytyczny importu: {}", "en": "CRASH: Critical import error: {}"},
-    "sat_clone_start": {"pl": "1/4 Klonowanie EPG z SAT...", "en": "1/4 Cloning SAT EPG..."},
-    "xml_url_dead": {"pl": "BŁĄD: Źródło XML jest niedostępne (404/Down)!", "en": "ERROR: XML Source unreachable (404/Down)!"}
+    "help_arrows": {
+        "pl": "< Zmień źródło strzałkami Lewo/Prawo >", 
+        "en": "< Change source using Left/Right arrows >"
+    },
+    "source_label": {
+        "pl": "Wybierz Źródło EPG:", 
+        "en": "Select EPG Source:"
+    },
+    "custom_label": {
+        "pl": "   >> Wpisz własny URL:", 
+        "en": "   >> Enter Custom URL:"
+    },
+    "map_file_label": {
+        "pl": "Plik mapowania (Cache):", 
+        "en": "Mapping File (Cache):"
+    },
+    "autoupdate_label": {
+        "pl": "Auto-Aktualizacja (co 24h):", 
+        "en": "Auto-Update (every 24h):"
+    },
+    "btn_exit": {
+        "pl": "Wyjdź", 
+        "en": "Exit"
+    },
+    "btn_import": {
+        "pl": "Importuj EPG", 
+        "en": "Import EPG"
+    },
+    "btn_map": {
+        "pl": "Mapuj Kanały", 
+        "en": "Map Channels"
+    },
+    "btn_update": {
+        "pl": "Aktualizuj Wtyczkę", 
+        "en": "Update Plugin"
+    },
+    "status_ready": {
+        "pl": "Gotowy. Wybierz opcję z menu poniżej.\n", 
+        "en": "Ready. Select an option from the menu below.\n"
+    },
+    "downloading": {
+        "pl": "Pobieranie pliku EPG...", 
+        "en": "Downloading EPG file..."
+    },
+    "success": {
+        "pl": "ZAKOŃCZONO!\nZaimportowano XML: {} | Połączono z SAT: {}", 
+        "en": "SUCCESS!\nXML Imported: {} | SAT Linked: {}"
+    },
+    "restart_title": {
+        "pl": "EPG Zaktualizowane pomyślnie!\nWymagany restart GUI. Zrestartować teraz?", 
+        "en": "EPG Updated Successfully!\nGUI Restart required. Restart now?"
+    },
+    "mapping_start": {
+        "pl": "Rozpoczynam mapowanie kanałów...", 
+        "en": "Starting channel mapping process..."
+    },
+    "mapping_success": {
+        "pl": "Mapowanie zakończone! Zmapowano kanałów: {}", 
+        "en": "Mapping complete! Channels mapped: {}"
+    },
+    "no_map": {
+        "pl": "Brak pliku mapowania! Najpierw wykonaj 'Mapuj'.", 
+        "en": "No mapping file found! Please run 'Map Channels' first."
+    },
+    "check_update": {
+        "pl": "Sprawdzanie dostępności aktualizacji na GitHub...", 
+        "en": "Checking for updates on GitHub..."
+    },
+    "update_ok": {
+        "pl": "Posiadasz najnowszą wersję wtyczki.", 
+        "en": "You have the latest version installed."
+    },
+    "update_avail": {
+        "pl": "Dostępna nowa wersja: {}\nCzy chcesz zaktualizować wtyczkę teraz?", 
+        "en": "New version available: {}\nDo you want to update the plugin now?"
+    },
+    "update_start": {
+        "pl": "Pobieranie i instalowanie aktualizacji...", 
+        "en": "Downloading and installing update..."
+    },
+    "update_done": {
+        "pl": "Aktualizacja zakończona sukcesem!\nWymagany restart GUI.", 
+        "en": "Update successful!\nGUI Restart is required."
+    },
+    "update_fail": {
+        "pl": "Aktualizacja nieudana. Sprawdź połączenie lub logi.", 
+        "en": "Update failed. Check internet connection or logs."
+    },
+    "timeout_error": {
+        "pl": "BŁĄD: Przekroczono limit czasu operacji (5 min)!", 
+        "en": "ERROR: Operation timed out (5 min limit exceeded)!"
+    },
+    "import_crash": {
+        "pl": "CRASH: Wystąpił błąd krytyczny podczas importu: {}", 
+        "en": "CRASH: Critical error during import: {}"
+    },
+    "xml_url_dead": {
+        "pl": "BŁĄD: Wybrane źródło XML jest niedostępne (Offline/404)!", 
+        "en": "ERROR: Selected XML Source is unreachable (Offline/404)!"
+    },
+    "sat_smart_match": {
+        "pl": "Inteligentne łączenie (SAT <-> IPTV)...",
+        "en": "Smart Linking (SAT <-> IPTV)..."
+    },
+    "sat_fallback": {
+        "pl": "Uzupełnianie braków z SAT...",
+        "en": "Filling gaps from SAT..."
+    }
 }
 
 def _(key): return TR[key].get(lang_code, TR[key]["en"]) if key in TR else key
 
 config.plugins.SimpleIPTV_EPG = ConfigSubsection()
 
+# --- INTERNATIONAL EPG SOURCES (2025 Validated) ---
 EPG_SOURCES = [
-    ("https://epgshare01.online/epgshare01/epg_ripper_PL1.xml.gz", "EPG Share PL (Polska - Polecane)"),
-    ("https://epgshare01.online/epgshare01/epg_ripper_ALL_SOURCES1.xml.gz", "EPG Share ALL (Świat - Duży plik)"),
-    ("https://raw.githubusercontent.com/globetvapp/epg/main/Poland/poland2.xml.gz", "GlobeTV Polska (GitHub)"),
-    ("https://iptv-epg.org/files/epg-pl.xml.gz", "IPTV-EPG.org (Polska)"),
-    ("https://epg.ovh/pl.gz", "EPG OVH (PL - Basic)"),
-    ("https://epg.ovh/plar.gz", "EPG OVH (PL + Opisy)"),
-    ("https://raw.githubusercontent.com/matthuisman/i.mjh.nz/master/PlutoTV/pl.xml.gz", "PlutoTV PL (GitHub)"),
-    ("https://raw.githubusercontent.com/matthuisman/i.mjh.nz/master/SamsungTVPlus/pl.xml.gz", "Samsung TV Plus PL"),
-    ("CUSTOM", "--- Custom URL ---")
+    # -- POLAND --
+    ("https://epgshare01.online/epgshare01/epg_ripper_PL1.xml.gz", "PL - EPG Share (Recommended)"),
+    ("http://epg.ovh/pl.xml.gz", "PL - EPG.OVH (Public)"),
+    ("https://iptv-org.github.io/epg/guides/pl.xml.gz", "PL - IPTV-Org (Basic)"),
+    
+    # -- INTERNATIONAL / EUROPE --
+    ("https://epgshare01.online/epgshare01/epg_ripper_UK1.xml.gz", "UK - United Kingdom (Full)"),
+    ("https://epgshare01.online/epgshare01/epg_ripper_DE1.xml.gz", "DE - Germany/Austria/Swiss (Full)"),
+    ("https://epgshare01.online/epgshare01/epg_ripper_IT1.xml.gz", "IT - Italy (Full)"),
+    ("https://epgshare01.online/epgshare01/epg_ripper_ES1.xml.gz", "ES - Spain (Full)"),
+    ("https://epgshare01.online/epgshare01/epg_ripper_FR1.xml.gz", "FR - France (Full)"),
+    ("https://epgshare01.online/epgshare01/epg_ripper_TR1.xml.gz", "TR - Turkey (Full)"),
+    ("https://epgshare01.online/epgshare01/epg_ripper_PT1.xml.gz", "PT - Portugal (Full)"),
+    
+    # -- REGIONAL / NORDIC --
+    ("https://iptv-org.github.io/epg/guides/nl.xml.gz", "NL - Netherlands"),
+    ("https://iptv-org.github.io/epg/guides/be.xml.gz", "BE - Belgium"),
+    ("https://iptv-org.github.io/epg/guides/se.xml.gz", "SE - Sweden"),
+    ("https://iptv-org.github.io/epg/guides/no.xml.gz", "NO - Norway"),
+    ("https://iptv-org.github.io/epg/guides/dk.xml.gz", "DK - Denmark"),
+    ("https://iptv-org.github.io/epg/guides/fi.xml.gz", "FI - Finland"),
+
+    # -- GLOBAL / MIX --
+    ("https://epgshare01.online/epgshare01/epg_ripper_ALL_SOURCES1.xml.gz", "GLOBAL - All Sources (HUGE FILE!)"),
+    
+    # -- CUSTOM --
+    ("CUSTOM", "--- Enter Custom URL ---")
 ]
 
 config.plugins.SimpleIPTV_EPG.source_select = ConfigSelection(default="https://epgshare01.online/epgshare01/epg_ripper_PL1.xml.gz", choices=EPG_SOURCES)
@@ -126,45 +237,46 @@ class EPGWorker:
         injector = EPGInjector()
         injected_refs = set()
 
-        # KROK 1: Sprawdź czy URL żyje (Head Request)
+        def progress_wrapper(msg):
+            if callback_log: callback_log(msg)
+
+        # 1. Check URL
         if not check_url_alive(url):
             if callback_log: callback_log(_("xml_url_dead"))
-            write_log(f"URL Dead: {url}")
             return False
 
-        # KROK 2: AGRESYWNY SAT CLONE (Zanim cokolwiek pobierzemy)
-        # Kopiuje EPG z SAT do IPTV jeśli nazwy są identyczne
-        if callback_log: callback_log(_("sat_clone_start"))
-        cloned_refs = inject_sat_clone_fallback(injector, log_cb=write_log)
+        # 2. SAT Clone (Smart Match)
+        if callback_log: callback_log(_("sat_smart_match"))
+        # Using updated function from epgcore.py
+        cloned_refs = inject_sat_clone_by_name(injector, log_cb=progress_wrapper)
         injected_refs.update(cloned_refs)
         
-        if callback_log: callback_log(f"Sklonowano z SAT: {len(cloned_refs)} kanałów")
-
-        # KROK 3: Pobieranie XML
+        # 3. Download
         if callback_log: callback_log(_("downloading"))
         write_log("Start Download...")
         if not download_file(url, temp_path, retries=3, timeout=120):
             if callback_log: callback_log("Download Error!")
             return False
             
-        # KROK 4: Automapowanie (tylko brakujących)
-        # Generujemy mapę w locie tylko dla kanałów, które nie dostały EPG z SAT Clone
+        # 4. Automapping
         mapper = AutoMapper(log_callback=write_log)
-        
-        if callback_log: callback_log("2/4 Mapowanie XML...")
-        # Ważne: exclude_refs zapobiega mapowaniu kanałów, które już mają EPG
-        mapping = mapper.generate_mapping(temp_path, exclude_refs=injected_refs)
+        def mapping_progress(current, total):
+            if callback_log and current % 100 == 0: 
+                percent = int(current * 100 / max(total, 1))
+                callback_log(f"Mapping: {percent}% ({current}/{total})")
 
-        # KROK 5: Parsowanie i Inject XML
-        if callback_log: callback_log("3/4 Import XML...")
+        # Uses new, fast generate_mapping
+        mapping = mapper.generate_mapping(temp_path, exclude_refs=injected_refs, progress_callback=mapping_progress)
+
+        # 5. Import XML
+        if callback_log: callback_log("Import XML...")
         write_log("Start Parsing XML...")
         parser = EPGParser(temp_path)
         
         count_xml = 0
         batch = 0
         
-        for service_ref, event_data in parser.load_events(mapping):
-            # Podwójne zabezpieczenie: jeśli ref już jest w injected, pomiń
+        for service_ref, event_data in parser.load_events(mapping, progress_cb=progress_wrapper):
             if service_ref in injected_refs: continue
             
             injector.add_event(service_ref, event_data)
@@ -175,12 +287,11 @@ class EPGWorker:
             if batch >= 2000:
                 injector.commit()
                 batch = 0
-                if callback_log: callback_log(f"XML: {count_xml}...")
         
         injector.commit()
 
-        # KROK 6: Tradycyjny SAT Fallback (dla resztek - ręczna mapa w epgcore)
-        if callback_log: callback_log("4/4 SAT Fallback (Final)...")
+        # 6. Final SAT Fallback
+        if callback_log: callback_log(_("sat_fallback"))
         count_sat_fallback = inject_sat_fallback(injector, injected_refs, log_cb=write_log)
         
         config.plugins.SimpleIPTV_EPG.last_update.value = str(int(time.time()))
@@ -189,9 +300,7 @@ class EPGWorker:
         total_sat = len(cloned_refs) + count_sat_fallback
         msg = _("success").format(count_xml, total_sat)
         if callback_log: callback_log(msg)
-        write_log(f"KONIEC. XML: {count_xml}, SAT Clone: {len(cloned_refs)}, SAT Fallback: {count_sat_fallback}")
         
-        # Sprzątanie
         try: os.remove(temp_path)
         except: pass
         
@@ -199,7 +308,7 @@ class EPGWorker:
 
 class IPTV_EPG_Config(ConfigListScreen, Screen):
     skin = """
-        <screen name="IPTV_EPG_Config" position="center,center" size="900,680" title="Simple IPTV EPG v1.1">
+        <screen name="IPTV_EPG_Config" position="center,center" size="900,680" title="Simple IPTV EPG v1.2 (Global)">
             <widget name="qrcode" position="20,10" size="130,130" transparent="1" alphatest="on" />
             <widget name="support_text" position="160,30" size="700,30" font="Regular;24" foregroundColor="#00ff00" transparent="1" />
             <widget name="author_info" position="160,70" size="700,50" font="Regular;20" foregroundColor="#aaaaaa" transparent="1" />
@@ -231,15 +340,11 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
         self["qrcode"] = Pixmap()
         self["support_text"] = Label(_("support_text"))
         self["help_arrows"] = Label(_("help_arrows"))
-        
-        date_str = datetime.now().strftime("%d.%m.%Y")
-        self["author_info"] = Label(_("author_details").format(date_str))
-        
+        self["author_info"] = Label(_("author_details").format(datetime.now().strftime("%d.%m.%Y")))
         self["key_red"] = Label(_("btn_exit"))
         self["key_green"] = Label(_("btn_import"))
         self["key_yellow"] = Label(_("btn_map"))
         self["key_blue"] = Label(_("btn_update"))
-        
         self["label_status"] = Label("Log:")
         self["status"] = ScrollLabel(_("status_ready"))
         
@@ -279,43 +384,27 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
     def updateConfigList(self):
         self.createConfigList()
         self["config"].setList(self.list)
+    def keyLeft(self): ConfigListScreen.keyLeft(self); self.updateConfigList()
+    def keyRight(self): ConfigListScreen.keyRight(self); self.updateConfigList()
 
-    def keyLeft(self):
-        ConfigListScreen.keyLeft(self)
-        self.updateConfigList()
-
-    def keyRight(self):
-        ConfigListScreen.keyRight(self)
-        self.updateConfigList()
-
-    def log(self, message):
-        reactor.callFromThread(self.gui_update_log, message)
+    def log(self, message): reactor.callFromThread(self.gui_update_log, message)
 
     def gui_update_log(self, message):
         try:
-            t = datetime.now().strftime("%H:%M:%S")
-            old = self["status"].getText()
-            if getattr(self, 'dot_task', None) and self.dot_task.running:
-                 self.anim_prefix = message
+            if "[" in message and "%" in message:
+                 self["status"].setText(message)
             else:
+                 t = datetime.now().strftime("%H:%M:%S")
+                 old = self["status"].getText()
                  self["status"].setText(old + f"[{t}] {message}\n")
                  self["status"].lastPage()
         except: pass
 
-    def animate_dots(self, prefix):
-        self.dots = 0
-        self.anim_prefix = prefix
-        self["status"].setText(prefix)
-        def _dot():
-            self.dots = (self.dots + 1) % 4
-            self["status"].setText(f"{self.anim_prefix}" + "." * self.dots)
-        self.dot_task = task.LoopingCall(_dot)
-        self.dot_task.start(0.3) 
-
-    def stop_dots(self):
-        if getattr(self, 'dot_task', None):
-            try: self.dot_task.stop()
-            except: pass
+    def animate_percent(self, prefix, current, total):
+        try:
+            percent = int(current * 100 / max(total, 1))
+            self["status"].setText(f"{prefix} | %: {percent}% ({current}/{total})")
+        except: pass
 
     def save_settings(self):
         for x in self["config"].list: x[1].save()
@@ -323,27 +412,21 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
 
     def start_import_gui(self):
         self.save_settings()
-        self.log("--- START IMPORT (GUI) ---")
-        self.animate_dots("Inicjalizacja") 
+        self["status"].setText(_("status_ready"))
 
         def _run_with_timeout():
             try:
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(self.worker.run_import, callback_log=self.log, silent=False)
-                    # Timeout 5 minut (300s)
                     result = future.result(timeout=300)
-                    
-                    reactor.callFromThread(self.stop_dots)
                     if result: 
-                        reactor.callFromThread(self.gui_update_log, "SUKCES! Zakończono.")
+                        reactor.callFromThread(self.gui_update_log, "OK! Finished.")
                         reactor.callFromThread(self.ask_restart)
                     else:
-                        reactor.callFromThread(self.gui_update_log, "BŁĄD IMPORTU!")
+                        reactor.callFromThread(self.gui_update_log, "IMPORT ERROR!")
             except TimeoutError:
-                reactor.callFromThread(self.stop_dots)
                 reactor.callFromThread(self.gui_update_log, _("timeout_error"))
             except Exception as e:
-                reactor.callFromThread(self.stop_dots)
                 reactor.callFromThread(self.gui_update_log, _("import_crash").format(e))
 
         threading.Thread(target=_run_with_timeout, daemon=True).start()
@@ -352,14 +435,11 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
         self.session.openWithCallback(self.do_restart, MessageBox, _("restart_title"), MessageBox.TYPE_YESNO)
 
     def do_restart(self, answer):
-        if answer:
-            from enigma import quitMainloop
-            quitMainloop(3)
+        if answer: from enigma import quitMainloop; quitMainloop(3)
 
     def start_mapping(self):
         self.save_settings()
-        self.log("--- START MAPPING ---")
-        self.animate_dots(_("mapping_start"))
+        self["status"].setText(_("mapping_start"))
         threading.Thread(target=self.thread_mapping, daemon=True).start()
 
     def thread_mapping(self):
@@ -368,24 +448,23 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
             ext = ".xml.gz" if ".gz" in url else ".xml"
             temp_path = "/tmp/epg_temp" + ext
             
-            # Pobieramy plik, żeby mieć na czym pracować
             if not download_file(url, temp_path, retries=3, timeout=60):
-                reactor.callFromThread(self.stop_dots)
                 reactor.callFromThread(self.gui_update_log, "Download FAIL")
                 return
 
-            mapper = AutoMapper(log_callback=None)
-            # Przy ręcznym mapowaniu generujemy wszystko (brak exclude)
-            mapping = mapper.generate_mapping(temp_path)
+            mapper = AutoMapper(log_callback=lambda msg: reactor.callFromThread(self.gui_update_log, msg))
+            
+            def progress_cb(current, total):
+                reactor.callFromThread(self.animate_percent, "Map", current, total)
+
+            mapping = mapper.generate_mapping(temp_path, progress_callback=progress_cb, exclude_refs=set())
             save_json(mapping, config.plugins.SimpleIPTV_EPG.mapping_file.value)
             
-            reactor.callFromThread(self.stop_dots)
             reactor.callFromThread(self.gui_update_log, _("mapping_success").format(len(mapping)))
         except Exception as e:
-            reactor.callFromThread(self.stop_dots)
             reactor.callFromThread(self.gui_update_log, f"ERROR: {e}")
 
-    # --- OBSŁUGA AKTUALIZACJI ---
+    # --- UPDATER ---
     def check_github_update(self):
         self.log(_("check_update"))
         version_url = GITHUB_BASE_URL + "version"
@@ -394,16 +473,10 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
     def github_callback(self, data):
         try:
             remote_version = data.decode('utf-8').strip()
-            local_version = "1.1" 
-            
+            local_version = PLUGIN_VERSION
             if remote_version > local_version:
-                self.log(f"Nowa wersja: {remote_version}")
-                self.session.openWithCallback(
-                    self.perform_update_question, 
-                    MessageBox, 
-                    _("update_avail").format(remote_version), 
-                    MessageBox.TYPE_YESNO
-                )
+                self.log(f"New version found: {remote_version}")
+                self.session.openWithCallback(self.perform_update_question, MessageBox, _("update_avail").format(remote_version), MessageBox.TYPE_YESNO)
             elif remote_version == local_version:
                 self.log(_("update_ok"))
                 self.session.open(MessageBox, _("update_ok") + f"\n(v{local_version})", MessageBox.TYPE_INFO)
@@ -411,43 +484,30 @@ class IPTV_EPG_Config(ConfigListScreen, Screen):
                 self.session.open(MessageBox, f"Dev/Test Version.\nGitHub: {remote_version} | Local: {local_version}", MessageBox.TYPE_INFO)
         except: pass
 
-    def github_error(self, error):
-        self.session.open(MessageBox, "GitHub Error: " + str(error), MessageBox.TYPE_ERROR)
+    def github_error(self, error): self.session.open(MessageBox, "GitHub Error: " + str(error), MessageBox.TYPE_ERROR)
 
     def perform_update_question(self, answer):
         if answer:
-            self.animate_dots(_("update_start"))
+            self["status"].setText(_("update_start"))
             threading.Thread(target=self.thread_perform_update, daemon=True).start()
 
     def thread_perform_update(self):
-        FILES_TO_UPDATE = ["plugin.py", "epgcore.py", "automapper.py", "version"]
+        FILES = ["plugin.py", "epgcore.py", "automapper.py", "version"]
         success = True
         plugin_path = os.path.dirname(__file__)
-
         try:
-            for fname in FILES_TO_UPDATE:
+            for fname in FILES:
                 url = GITHUB_BASE_URL + fname
                 target_tmp = f"/tmp/{fname}"
                 target_final = os.path.join(plugin_path, fname)
-                
-                # Używamy epgcore.download_file
                 if download_file(url, target_tmp, retries=2, timeout=10):
                     shutil.move(target_tmp, target_final)
-                    reactor.callFromThread(self.gui_update_log, f"Zaktualizowano: {fname}")
+                    reactor.callFromThread(self.gui_update_log, f"Updated: {fname}")
                 else:
-                    success = False
-                    reactor.callFromThread(self.gui_update_log, f"Błąd pobierania: {fname}")
-                    break
-            
-            reactor.callFromThread(self.stop_dots)
-            
-            if success:
-                reactor.callFromThread(self.session.openWithCallback, self.do_restart, MessageBox, _("update_done"), MessageBox.TYPE_YESNO)
-            else:
-                reactor.callFromThread(self.session.open, MessageBox, _("update_fail"), MessageBox.TYPE_ERROR)
-
+                    success = False; break
+            if success: reactor.callFromThread(self.session.openWithCallback, self.do_restart, MessageBox, _("update_done"), MessageBox.TYPE_YESNO)
+            else: reactor.callFromThread(self.session.open, MessageBox, _("update_fail"), MessageBox.TYPE_ERROR)
         except Exception as e:
-            reactor.callFromThread(self.stop_dots)
             reactor.callFromThread(self.gui_update_log, f"Update Crash: {e}")
 
 def AutoUpdateCheck():
@@ -469,6 +529,6 @@ def main(session, **kwargs): session.open(IPTV_EPG_Config)
 
 def Plugins(**kwargs):
     return [
-        PluginDescriptor(name="Simple IPTV EPG", description="Importer EPG Auto/Manual", where=PluginDescriptor.WHERE_PLUGINMENU, icon="plugin.png", fnc=main),
+        PluginDescriptor(name="Simple IPTV EPG", description="International EPG Importer (Fast)", where=PluginDescriptor.WHERE_PLUGINMENU, icon="plugin.png", fnc=main),
         PluginDescriptor(where=PluginDescriptor.WHERE_SESSIONSTART, fnc=StartSession)
     ]
