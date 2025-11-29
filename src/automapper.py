@@ -4,18 +4,16 @@ import xml.etree.cElementTree as ET
 import gzip
 import json
 import time
-from difflib import get_close_matches
 
 CACHE_FILE = "/tmp/enigma_services.json"
-CACHE_MAX_AGE = 120 
+CACHE_MAX_AGE = 300 
 
 def _load_services_cached(bouquets_path):
     if os.path.exists(CACHE_FILE):
         try:
             stat = os.stat(CACHE_FILE)
             if time.time() - stat.st_mtime < CACHE_MAX_AGE:
-                with open(CACHE_FILE, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                with open(CACHE_FILE, 'r', encoding='utf-8') as f: return json.load(f)
         except: pass
 
     services = []
@@ -37,52 +35,59 @@ def _load_services_cached(bouquets_path):
                             ref_clean = line.replace('#SERVICE ', '').strip()
                             services.append({'full_ref': ref_clean, 'name': potential_name})
                     elif line.startswith('#DESCRIPTION'):
-                        if services and "###" not in line:
-                            services[-1]['name'] = line.replace('#DESCRIPTION', '').strip()
+                        if services and "###" not in line: services[-1]['name'] = line.replace('#DESCRIPTION', '').strip()
         except: continue
 
-    seen = set()
-    unique = []
+    # Deduplikacja
+    seen = set(); unique = []
     for s in services:
         if s['full_ref'] not in seen:
             seen.add(s['full_ref'])
             unique.append(s)
             
-    with open(CACHE_FILE, 'w', encoding='utf-8') as f: json.dump(unique, f)
+    try:
+        with open(CACHE_FILE, 'w', encoding='utf-8') as f: json.dump(unique, f)
+    except: pass
     return unique
 
 class AutoMapper:
     def __init__(self, log_callback=None):
         self.bouquets_path = '/etc/enigma2/'
         self.log = log_callback
-        self.CHANNEL_ALIASES = {
-            "TVP1": ["TVP 1", "TVP1 HD", "TVP1 FHD", "TVP1 PL", "PROGRAM 1"],
-            "TVP2": ["TVP 2", "TVP2 HD", "TVP2 FHD", "TVP 2 HD", "PROGRAM 2"],
-            "POLSAT": ["POLSAT HD", "POLSAT FHD", "POLSAT PL"],
-            "TVN": ["TVN HD", "TVN FHD", "TVN PL"],
-            "TVN 24": ["TVN24", "TVN 24 HD", "TVN24 BIS"],
-            "EUROSPORT 1": ["EUROSPORT 1 HD", "EUROSPORT 1 FHD", "EUROSPORT 1 PL"],
-            "CANAL+ SPORT": ["CANAL+ SPORT HD", "C+ SPORT"],
-            "HBO": ["HBO HD", "HBO FHD", "HBO PL"]
-        }
+        # Rozszerzone śmieciowe słowa dla lepszego czyszczenia nazw IPTV
         self.junk_words = [
-            'HD', 'FHD', 'UHD', '4K', 'SD', 'HEVC', 'H265', 'PL', 'POL', '(PL)', '[PL]',
+            'HD', 'FHD', 'UHD', '4K', 'SD', 'HEVC', 'H265', 'H.265', 'PL', 'POL', '(PL)', '[PL]',
             'VIP', 'RAW', 'VOD', 'XXX', 'PREMIUM', 'BACKUP', 'TEST', 'SUB', 'DUB', 'LEKTOR',
-            'TV', 'CHANNEL', 'KANAL', 'STREAM', 'LIVE', 'FHD', 'UHD', '4K'
+            'TV', 'CHANNEL', 'KANAL', 'STREAM', 'LIVE', 'AAC', 'AC3', 'DD+', 'HQ', 'LOW', 'MAIN',
+            'PL/EU', 'ORG', 'OFFICIAL', 'V2', 'V3', 'OTV'
         ]
+        # Aliasy do mapowania XML <-> IPTV (Klucz = Nazwa w IPTV lub XML uproszczona, Wartość = Nazwa szukana)
+        self.CHANNEL_ALIASES = {
+            "TVP1": ["TVP 1", "PROGRAM 1"],
+            "TVP2": ["TVP 2", "PROGRAM 2"],
+            "TVN24": ["TVN 24", "TVN 24 BIS"],
+            "POLSAT": ["POLSAT NEWS", "POLSAT SPORT"],
+            # Dodaj więcej jeśli specyficzne mapowania nie działają
+        }
 
     def _simplify_name(self, text):
         if not text: return ""
-        text = text.upper().replace('+', ' PLUS ').replace('&', ' AND ')
+        text = text.upper()
+        # Zamień znaki
+        text = text.replace('+', ' PLUS ').replace('&', ' AND ').replace('Ł', 'L').replace('Ś', 'S').replace('Ć', 'C').replace('Ż', 'Z').replace('Ź', 'Z')
+        # Usuń wszystko co nie jest literą/cyfrą
         text = re.sub(r'[^A-Z0-9\s]', ' ', text)
-        clean_words = [w for w in text.split() if w not in self.junk_words]
-        return "".join(clean_words)
+        # Podziel i usuń junk words
+        words = text.split()
+        clean_words = [w for w in words if w not in self.junk_words and len(w) > 0]
+        return "".join(clean_words) # Zwraca np "TVP1" z "TVP 1 HD"
 
-    def get_enigma_services(self):
-        return _load_services_cached(self.bouquets_path)
+    def get_enigma_services(self): return _load_services_cached(self.bouquets_path)
 
+    # [UPDATE] Szybsze indeksowanie XML
     def get_xmltv_channels(self, xml_path):
-        exact_map = {}
+        norm_map = {} # { "TVP1": "tvp1.pl", "POLSAT": "polsat.pl" }
+        
         if not os.path.exists(xml_path): return {}
         opener = gzip.open if xml_path.endswith('.gz') else open
         try:
@@ -93,67 +98,65 @@ class AutoMapper:
                         xml_id = elem.get('id')
                         display_name = ""
                         for child in elem:
-                            if child.tag == 'display-name':
-                                display_name = child.text; break
+                            if child.tag == 'display-name': 
+                                display_name = child.text
+                                break
                         
-                        candidates = []
-                        if display_name: candidates.append(self._simplify_name(display_name))
-                        if xml_id: candidates.append(self._simplify_name(xml_id.replace('.pl', '')))
+                        # Indeksujemy ID
+                        if xml_id:
+                            simple_id = self._simplify_name(xml_id.replace('.pl', ''))
+                            if simple_id: norm_map[simple_id] = xml_id
                         
-                        for clean_name in candidates:
-                            if clean_name and len(clean_name) > 1: exact_map[clean_name] = xml_id
+                        # Indeksujemy Display Name
+                        if display_name:
+                            simple_name = self._simplify_name(display_name)
+                            if simple_name: norm_map[simple_name] = xml_id
+                            
                         elem.clear()
                     elif elem.tag == 'programme': break
         except: pass
-        return exact_map
-    
-    def find_best_match(self, iptv_name, xml_candidates, xml_index):
-        match = get_close_matches(iptv_name, xml_candidates, n=1, cutoff=0.85)
-        return xml_index[match[0]] if match else None
+        return norm_map
 
-    # [UPDATE] Nowy argument exclude_refs
-    def generate_mapping(self, xml_path, exclude_refs=None):
+    # [UPDATE] Zoptymalizowane mapowanie (Słownikowe zamiast pętli difflib)
+    def generate_mapping(self, xml_path, exclude_refs=None, progress_callback=None):
         if exclude_refs is None: exclude_refs = set()
-        
+
+        if self.log: self.log("Wczytywanie usług Enigma2...")
         e2_services = self.get_enigma_services()
-        xml_index = self.get_xmltv_channels(xml_path)
-        xml_candidates = list(xml_index.keys())
-
-        final_mapping = {}
-        matched_count = 0
-        skipped_count = 0
-
-        alias_to_canonical = {}
-        for canonical, aliases in self.CHANNEL_ALIASES.items():
-            for a in aliases: alias_to_canonical[self._simplify_name(a)] = canonical
         
-        if self.log: self.log(f"Mapowanie... (Pominięto {len(exclude_refs)} już zrobionych)")
+        if self.log: self.log("Indeksowanie XMLTV (może chwilę potrwać)...")
+        xml_map_norm = self.get_xmltv_channels(xml_path)
+        
+        final_mapping = {} # { "xml_id": ["ref1", "ref2"] }
+        matched_count = 0
+        total = len(e2_services)
 
-        for service in e2_services:
-            # POMIJANIE TYCH CO MAJĄ JUŻ EPG Z SAT
-            if service['full_ref'] in exclude_refs:
-                skipped_count += 1
-                continue
+        for idx, service in enumerate(e2_services):
+            if progress_callback and idx % 200 == 0:
+                progress_callback(idx + 1, total)
 
-            iptv_clean = self._simplify_name(service['name'])
-            if len(iptv_clean) < 2: continue
+            if service['full_ref'] in exclude_refs: continue
 
-            xml_id = xml_index.get(iptv_clean)
+            # Normalizacja nazwy IPTV
+            iptv_name_clean = self._simplify_name(service['name'])
+            if len(iptv_name_clean) < 2: continue
+
+            # 1. Próba bezpośredniego trafienia w znormalizowany XML
+            xml_id = xml_map_norm.get(iptv_name_clean)
+
+            # 2. Próba "zawiera się" (np. IPTV: "CANALPLUSSPORT" -> XML: "CANALPLUS")
+            # Uwaga: To może dawać fałszywe trafienia, więc ostrożnie
             if not xml_id:
-                canonical = alias_to_canonical.get(iptv_clean)
-                if canonical: xml_id = xml_index.get(self._simplify_name(canonical))
-            if not xml_id:
-                xml_id = self.find_best_match(iptv_clean, xml_candidates, xml_index)
+                # Sprawdź czy nazwa kanału zawiera się w kluczach XML (dla krótkich nazw ryzykowne)
+                pass
 
             if xml_id:
-                if xml_id not in final_mapping: final_mapping[xml_id] = []
-                final_mapping[xml_id].append(service['full_ref'])
+                final_mapping.setdefault(xml_id, []).append(service['full_ref'])
                 matched_count += 1
-
-        for xml_id in final_mapping:
-            final_mapping[xml_id] = list(dict.fromkeys(final_mapping[xml_id]))
-
-        if self.log:
-            self.log(f"Zmapowano z XML: {matched_count} kanałów")
             
+        # Deduplikacja referencji w mapowaniu
+        for xml_id in final_mapping:
+            final_mapping[xml_id] = list(set(final_mapping[xml_id]))
+
+        if self.log: self.log(f"Zmapowano metodą Fast: {matched_count} kanałów")
         return final_mapping
