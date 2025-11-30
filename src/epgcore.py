@@ -9,34 +9,16 @@ import ssl
 import os
 import subprocess
 import re
-from difflib import SequenceMatcher
-from enigma import eEPGCache
-from .automapper import _load_services_cached
+from enigma import eEPGCache, eServiceCenter, eServiceReference
 
-# --- MAPA SAT FALLBACK (Możesz tu wpisać własne Reference SAT jeśli automat nie zadziała) ---
-SAT_FALLBACK_MAP = {
-    "TVP 1 HD": "1:0:19:3ABD:13F0:13E:820000:0:0:0:", 
-    "TVP 2 HD": "1:0:19:3ABE:13F0:13E:820000:0:0:0:",
-    "POLSAT HD": "1:0:19:332D:3390:71:820000:0:0:0:",
-    "TVN HD": "1:0:19:3DCD:640:13E:820000:0:0:0:",
-    "TVP INFO HD": "1:0:19:1234:5678:9ABC:0:0:0:0:",
-}
-
-# [UPDATE] Agresywna normalizacja (usuwa HD, PL, spacje itp.)
-def normalize_name(name):
-    if not name: return ""
-    name = name.upper()
-    # Usuń znaki specjalne i spacje, zostaw tylko litery i cyfry
-    # Najpierw usuń popularne dopiski, żeby nie zakłócały matchowania (np. Canal+ Sport 3 vs Canal+ Sport)
-    name = re.sub(r'\b(FULLHD|FHD|UHD|4K|HEVC|HD|SD|PL|POL|H265|RAW|VIP)\b', '', name)
-    name = re.sub(r'[^A-Z0-9]', '', name) 
-    return name
-
-def check_gzip_integrity(filepath):
+# Logowanie
+DEBUG_FILE = "/tmp/simple_epg.log"
+def log_debug(msg):
     try:
-        with open(filepath, 'rb') as f: return f.read(2) == b'\x1f\x8b'
-    except: return False
+        with open(DEBUG_FILE, "a") as f: f.write(f"[CORE] {msg}\n")
+    except: pass
 
+# --- TOOLS ---
 def check_url_alive(url, timeout=10):
     try:
         ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
@@ -48,171 +30,120 @@ def download_file(url, target_path, retries=3, timeout=120):
     if os.path.exists(target_path): 
         try: os.remove(target_path)
         except: pass
-    
-    # Próba wget (często stabilniejsza na tunerach)
     for attempt in range(retries):
         try:
-            cmd = ["wget", "--no-check-certificate", f"--timeout={timeout}", "-O", target_path, url]
+            cmd = ["curl", "-k", "-L", "-m", str(timeout), "-o", target_path, url]
             subprocess.run(cmd, capture_output=True, timeout=timeout+10)
-            if os.path.exists(target_path) and os.path.getsize(target_path) > 1000:
-                 if url.endswith('.gz') and not check_gzip_integrity(target_path):
-                     os.remove(target_path); continue
-                 return True
-        except: pass
-        
-        # Fallback do curl
-        try:
-            cmd = ["curl", "-k", "-L", "-m", str(timeout), "-A", "Mozilla/5.0", "-o", target_path, url]
-            subprocess.run(cmd, capture_output=True, timeout=timeout+10)
-            if os.path.exists(target_path) and os.path.getsize(target_path) > 1000:
-                return True
+            if os.path.exists(target_path) and os.path.getsize(target_path) > 1000: return True
         except: pass
         time.sleep(2)
-        
     return False
 
+# --- NORMALIZACJA ---
+def get_extended_core_name(name):
+    if not name: return ""
+    name = name.upper()
+    replacements = {'+': 'PLUS', '&': 'AND', '24': 'TWENTYFOUR', 'Ł': 'L', 'Ś': 'S', 'Ć': 'C', 'Ż': 'Z', 'Ź': 'Z', 'Ą': 'A', 'Ę': 'E', 'Ó': 'O', 'Ń': 'N'}
+    for old, new in replacements.items(): name = name.replace(old, new)
+    trash = ['FULLHD', 'FHD', 'UHD', '4K', 'HEVC', 'H265', 'H.265', 'HD', 'SD', 'PL', 'POL', '(PL)', '[PL]', 'VIP', 'RAW', 'VOD', 'XXX', 'PREMIUM', 'BACKUP', 'TEST', 'SUB', 'DUB', 'LEKTOR', 'OTV', 'V2', 'V3', 'ORG', 'PL:', '|PL|', '[STREAM]', '(TV)', '[YT]', '(YT)', 'TV', 'CHANNEL', 'LIVE', 'POLSKA', 'KANAL', 'POLAND', 'INTERNATIONAL', 'EU', 'EUROPE']
+    for t in trash: name = name.replace(t, '')
+    name = re.sub(r'[^A-Z0-9]', '', name)
+    return name.strip()
+
+# --- EPG ---
 def get_sat_epg_events(sat_ref, start_ts, end_ts):
     cache = eEPGCache.getInstance()
-    # Pobieramy eventy z SAT
     events = cache.lookupEvent([sat_ref, 2, start_ts, end_ts])
     out = []
     if events:
-        for ev in events: out.append((ev[0], ev[1], ev[2], ev[3] if len(ev) > 3 else ""))
+        for ev in events: 
+            out.append((ev[0], ev[1], ev[2], ev[3] if len(ev) > 3 else ""))
     return out
 
-# [UPDATE] Inject SAT po nazwach (Ulepszona logika)
-def inject_sat_clone_by_name(injector, log_cb=None):
-    all_services = _load_services_cached('/etc/enigma2/')
+# --- SCAN RAM ---
+def get_all_services_from_memory():
+    sat_map = {}   
+    iptv_list = [] 
     
-    sat_map = {} # { "TVP1": "1:0:..." }
-    iptv_list = []
+    serviceHandler = eServiceCenter.getInstance()
+    ref_root = eServiceReference('1:7:1:0:0:0:0:0:0:0:FROM BOUQUET "bouquets.tv" ORDER BY bouquet')
+    list_root = serviceHandler.list(ref_root)
+    
+    if list_root:
+        bouquets = list_root.getContent("SN")
+        for b_ref_str, b_name in bouquets:
+            ref_bouquet = eServiceReference(b_ref_str)
+            list_bouquet = serviceHandler.list(ref_bouquet)
+            
+            if list_bouquet:
+                services = list_bouquet.getContent("SN")
+                for s_ref, s_name in services:
+                    if "---" in s_name or "###" in s_name: continue
+                    ref_lower = s_ref.lower()
+                    
+                    # Definicja IPTV (rozszerzona o MAC/Stalker 1:0:1...http)
+                    is_iptv = False
+                    if '4097:' in s_ref or '5001:' in s_ref or '5002:' in s_ref: is_iptv = True
+                    elif any(x in ref_lower for x in ['http', 'https', '%3a', 'rtmp']): is_iptv = True
+                    
+                    # Definicja SAT
+                    is_sat = ('1:0:' in s_ref) and not is_iptv
+                    
+                    if is_sat:
+                        core = get_extended_core_name(s_name)
+                        if len(core) > 1: sat_map[core] = s_ref
+                    elif is_iptv:
+                        iptv_list.append({'ref': s_ref, 'name': s_name})
+                            
+    return sat_map, iptv_list
 
-    # 1. Indeksowanie SAT z normalizacją
-    # Tworzymy słownik gdzie kluczem jest "czysta nazwa" a wartością ref SAT
-    for s in all_services:
-        ref = s['full_ref']
-        name = s['name']
-        
-        if '1:0:' in ref and '::' in ref: # SAT Reference
-            key = normalize_name(name)
-            if key and len(key) > 1:
-                sat_map[key] = ref
-        elif any(x in ref for x in ['4097:', '5001:', '5002:']): # IPTV
-            iptv_list.append(s)
+# --- INJECT ---
+def inject_sat_clone_by_name(injector, log_cb=None):
+    log_debug("Start RAM Scan...")
+    sat_map, iptv_list = get_all_services_from_memory()
+    log_debug(f"RAM: SAT={len(sat_map)}, IPTV={len(iptv_list)}")
+    if log_cb: log_cb(f"Analiza: SAT={len(sat_map)} | IPTV={len(iptv_list)}")
 
     injected = set()
-    now = int(time.time())
-    end = now + 4 * 86400 # 4 dni
-    total = len(iptv_list)
-
-    # Rozszerzona lista aliasów ręcznych dla polskich platform
-    aliases = {
-        "TVP1": ["PROGRAM1", "TVP1PL", "TVP1HD", "TVP1FHD"],
-        "TVP2": ["PROGRAM2", "TVP2PL", "TVP2HD", "TVP2FHD"],
-        "POLSAT": ["POLSATPL", "POLSATHD", "POLSATFHD"],
-        "TVN": ["TVNPL", "TVNHD", "TVNFHD"],
-        "TVN7": ["TVN7PL", "TVN7HD", "SIODEMKA"],
-        "TV4": ["TV4PL", "TV4HD"],
-        "PULS": ["TVPULS", "PULSPL", "TVPULSHD"],
-        "PULS2": ["TVPULS2", "PULS2HD"],
-        "TTV": ["TTVHD", "TTVPL"],
-        "TVN24": ["TVN24HD", "TVN24BIS", "TVN24PL"],
-        "TVN24BIS": ["TVN24BISHD", "TVN24BISPL"],
-        "CANALPLUS": ["CANAL", "C", "CANALPLUSHD"],
-        "CANALPLUSSPORT": ["CSPORT", "CANALSPORT", "CANALPLUSSPORTHD"],
-        "CANALPLUSSPORT2": ["CSPORT2", "CANALSPORT2"],
-        "CANALPLUSSPORT3": ["CSPORT3", "CANALSPORT3"],
-        "ELEVENSPORTS1": ["ELEVEN1", "ELEVENSPORTS1HD"],
-        "ELEVENSPORTS2": ["ELEVEN2", "ELEVENSPORTS2HD"],
-        "EUROSPORT1": ["EUROSPORT", "EUROSPORT1HD", "EUROSPORT1INT"],
-        "HBO": ["HBOHD", "HBO1"],
-        "HBO2": ["HBO2HD"],
-        "HBO3": ["HBO3HD"],
-    }
-
+    now = int(time.time()); end = now + 7 * 86400
+    matched_count = 0
+    
     for idx, iptv in enumerate(iptv_list):
-        raw_name = iptv['name']
-        key = normalize_name(raw_name)
+        core_key = get_extended_core_name(iptv['name'])
+        sat_ref = sat_map.get(core_key)
         
-        # 1. Szukamy po znormalizowanej nazwie (Strict)
-        sat_ref = sat_map.get(key)
-        
-        # 2. Szukamy po aliasach
-        if not sat_ref:
-            for master_key, alt_list in aliases.items():
-                if key == master_key or key in alt_list:
-                    sat_ref = sat_map.get(master_key)
-                    if not sat_ref:
-                        # Próbuj znaleźć ref dla aliasów
-                        for alt in alt_list:
-                            if alt in sat_map:
-                                sat_ref = sat_map[alt]
-                                break
-                    break
-        
-        # 3. Fuzzy match dla trudnych przypadków (np. "Canal+ Sport 3" vs "Canal+ Sport 3 HD")
-        # Jeśli nazwa jest długa i zawiera kluczowe słowo
-        if not sat_ref and len(key) > 4:
-             # Sprawdź czy klucz IPTV zawiera się w kluczu SAT (lub odwrotnie)
-             # To ryzykowne, ale dla polskich nazw działa nieźle
-             pass 
+        # Smart Match (fallback)
+        if not sat_ref and len(core_key) > 3:
+             for k, v in sat_map.items():
+                 if (core_key in k or k in core_key) and abs(len(k) - len(core_key)) < 3:
+                     sat_ref = v; break
 
         if sat_ref:
             events = get_sat_epg_events(sat_ref, now, end)
             if events:
-                # Debug co 100
-                if log_cb and idx % 200 == 0: log_cb(f"[SAT MATCH] {raw_name} -> OK")
-                
                 for start, dur, title, desc in events:
-                    injector.add_event(iptv['full_ref'], (start, dur, title[:240], desc[:1024]))
-                injected.add(iptv['full_ref'])
+                    injector.add_event(iptv['ref'], (start, dur, title[:240], desc[:1024]))
+                injected.add(iptv['ref'])
+                matched_count += 1
 
-        # Procenty
-        if log_cb and idx % 100 == 0:
-            percent = int((idx + 1) * 100 / max(total, 1))
-            log_cb(f"[SAT LINK] {percent}%")
+        if log_cb and idx % 500 == 0:
+            percent = int((idx + 1) * 100 / max(len(iptv_list), 1))
+            log_cb(f"Łączenie SAT: {percent}%")
 
-    if injected:
-        injector.commit()
-        if log_cb: log_cb(f"[SAT LINK] Połączono: {len(injected)} kanałów")
-
+    if log_cb: log_cb(f"SAT: Zgrano {matched_count} kanałów")
+    if injected: injector.commit()
     return injected
 
-def inject_sat_fallback(injector, injected_refs, log_cb=None):
-    all_services = _load_services_cached('/etc/enigma2/')
-    missing_epg = [s for s in all_services if s['full_ref'] not in injected_refs]
-    if not missing_epg: return 0
-
-    sat_batch_map = {}
-    for s in missing_epg:
-        name = s['name'].upper().strip()
-        sat_ref = SAT_FALLBACK_MAP.get(name)
-        if sat_ref:
-            sat_batch_map.setdefault(sat_ref, []).append(s['full_ref'])
-
-    count_injected = 0
-    now = int(time.time()); end_time = now + (3 * 24 * 3600)
-
-    for sat_ref, iptv_refs in sat_batch_map.items():
-        events = get_sat_epg_events(sat_ref, now, end_time)
-        if events:
-            for start, dur, title, desc in events:
-                for iptv_ref in iptv_refs: injector.add_event(iptv_ref, (start, dur, title, desc))
-            count_injected += len(iptv_refs)
-
-    if count_injected > 0: injector.commit()
-    return count_injected
+def inject_sat_fallback(injector, injected_refs, log_cb=None): return 0
 
 class EPGParser:
     def __init__(self, source_path): self.source_path = source_path
     def parse_timestamp(self, xmltv_date):
         try: return int(datetime.datetime.strptime(xmltv_date[:14], "%Y%m%d%H%M%S").timestamp())
         except: return 0
-
     def load_events(self, channel_map, progress_cb=None):
         if not os.path.exists(self.source_path): return
         opener = gzip.open if self.source_path.endswith('.gz') else open
-        
         try:
             with opener(self.source_path, 'rb') as f:
                 context = ET.iterparse(f, events=("end",))
@@ -236,8 +167,7 @@ class EPGParser:
                         except: pass
                         finally: elem.clear()
                         count += 1
-                        if progress_cb and count % 5000 == 0:
-                            progress_cb(f"[XML] Eventy: {count}")
+                        if progress_cb and count % 10000 == 0: progress_cb(f"[XML] Eventy: {count}")
                     elif elem.tag == 'tv': elem.clear()
         except: pass
 
