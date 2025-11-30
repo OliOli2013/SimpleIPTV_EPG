@@ -1,3 +1,19 @@
+# v1.3 Changelog
+
+### 🇬🇧 English
+* **🚀 Core Engine Rewrite:** Switched Satellite scanning to direct `lamedb` parsing. Fixes the "0 SAT channels linked" issue on most images.
+* **📺 MAC/Stalker Support:** Added logic to correctly identify IPTV streams disguised as DVB references (`1:0:1...http`). EPG now works for MAC Portal/JediMaker lists.
+* **🔴 UI Improvement:** Red button is now mapped to **"Hide in Background"** (does not kill the process). Use physical *EXIT* button to close.
+* **🌍 New Source:** Added `EPG.PW` (Multi-Language) to the source list.
+* **⚡ Optimization:** Increased operation timeout to 45 minutes for huge XML files.
+
+### 🇵🇱 Polski
+* **🚀 Nowy Silnik SAT:** Wtyczka czyta teraz systemową bazę `lamedb`. Naprawia to problem "Zgrano 0 kanałów" u użytkowników, u których nie działało czytanie z bukietów.
+* **📺 Obsługa MAC/Stalker:** Poprawiono wykrywanie strumieni w listach typu JediMaker/XStreamity (referencje `1:0:1` zawierające linki `http` są teraz traktowane jako IPTV).
+* **🔴 Poprawka GUI:** Czerwony przycisk służy teraz do **"Ukrycia w tle"** (minimalizacji). Wtyczka pracuje dalej. Aby zamknąć, użyj przycisku *EXIT*.
+* **🌍 Nowe Źródło:** Dodano `EPG.PW`.
+* **⚡ Stabilność:** Zwiększono limit czasu operacji do 45 minut (dla bardzo dużych plików XML).
+
 v1.2 Release Notes:
 - 🌍 ADDED: International EPG Sources (UK, DE, IT, ES, FR, TR, PT, Global)
 - 🚀 NEW: "Fast Mapper" Engine - mapping is now instant (seconds instead of minutes)
