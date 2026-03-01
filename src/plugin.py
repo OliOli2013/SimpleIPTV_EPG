@@ -43,7 +43,7 @@ lang_code = get_lang()
 TR = {
     "header": { "pl": f"Simple IPTV EPG v{PLUGIN_VERSION} (Fast)", "en": f"Simple IPTV EPG v{PLUGIN_VERSION} (Fast)" },
     "support_text": { "pl": "Wesprzyj rozwój wtyczki (Buy Coffee)", "en": "Support development (Buy Coffee)" },
-    "author_details": { "pl": "Twórca: Paweł Pawełek | Data: 30.11.2025 | email: msisytem@t.pl", "en": "Author: Paweł Pawełek | Date: 30.11.2025 | email: msisytem@t.pl" },
+    "author_details": { "pl": "Twórca: Paweł Pawełek | Data: 30.11.2025 | email: aio-iptv@wp.pl", "en": "Author: Paweł Pawełek | Date: 30.11.2025 | email: aio-iptv@wp.pl" },
     "help_arrows": { "pl": "< Zmień źródło strzałkami Lewo/Prawo >", "en": "< Change source using Left/Right arrows >" },
     "source_label": { "pl": "Wybierz Źródło EPG:", "en": "Select EPG Source:" },
     "custom_label": { "pl": "   >> Wpisz własny URL:", "en": "   >> Enter Custom URL:" },
