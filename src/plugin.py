@@ -1,418 +1,739 @@
+# -*- coding: utf-8 -*-
 from Plugins.Plugin import PluginDescriptor
 from Screens.Screen import Screen
-from Components.Label import Label
+from Screens.MessageBox import MessageBox
 from Components.ActionMap import ActionMap
 from Components.ConfigList import ConfigListScreen
-from Components.config import config, ConfigSubsection, ConfigText, ConfigSelection, ConfigYesNo, getConfigListEntry
-from Components.ScrollLabel import ScrollLabel
+from Components.Label import Label
 from Components.Pixmap import Pixmap
-from Screens.MessageBox import MessageBox
+from Components.ScrollLabel import ScrollLabel
+from Components.config import (
+    config,
+    ConfigSubsection,
+    ConfigSelection,
+    ConfigText,
+    ConfigYesNo,
+    getConfigListEntry,
+)
 from Components.Language import language
 from twisted.internet import reactor
-from twisted.web.client import getPage
-import threading
+
 import os
-import json
+import threading
 import time
-import shutil
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
-# Importy lokalne
-from .epgcore import EPGParser, EPGInjector, download_file, inject_sat_fallback, inject_sat_clone_by_name, check_url_alive
 from .automapper import AutoMapper
+from .epgcore import (
+    EPGInjector,
+    EPGParser,
+    atomic_write_json,
+    clone_sat_to_iptv,
+    download_file,
+    ensure_temp_dir,
+    load_json,
+    log_message,
+    scan_bouquet_services,
+    update_plugin_package,
+    validate_xmltv_file,
+)
 
-# --- KONFIGURACJA ---
-GITHUB_USER = "OliOli2013"
-GITHUB_REPO = "SimpleIPTV_EPG"
-GITHUB_BRANCH = "main"
-GITHUB_BASE_URL = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/{GITHUB_BRANCH}/"
-PLUGIN_VERSION = "1.3"
+PLUGIN_VERSION = "2.2.1"
+PLUGIN_TITLE = "Simple IPTV EPG"
+TEMP_XML_PATH = "/tmp/simpleiptvepg/guide.xml.gz"
+TEMP_XML_FALLBACK = "/tmp/simpleiptvepg/guide.xml"
+GLOBAL_WORKER = None
+AUTOUPDATE_STARTED = False
+ACTIVE_SESSION = None
 
-# LIMIT CZASU (45 minut)
-OPERATION_TIMEOUT = 2700 
+SOURCE_DEFINITIONS = [
+    {
+        "id": "AUTO_AIO",
+        "label": "AUTO - AIO Polska + fallback międzynarodowy",
+        "urls": [
+            "https://epg.ovh/pl.gz",
+            "https://epg.ovh/pltv.gz",
+            "https://epgshare01.online/epgshare01/epg_ripper_PL1.xml.gz",
+            "https://epg.pw/xmltv/epg_lite.xml.gz",
+            "https://epg.pw/xmltv/epg.xml.gz",
+        ],
+    },
+    {
+        "id": "AUTO_PL_FAST",
+        "label": "AUTO - Polska szybkie (OVH -> EPGShare)",
+        "urls": [
+            "https://epg.ovh/pl.gz",
+            "https://epgshare01.online/epgshare01/epg_ripper_PL1.xml.gz",
+            "https://epg.pw/xmltv/epg_lite.xml.gz",
+        ],
+    },
+    {
+        "id": "AUTO_PL_RICH",
+        "label": "AUTO - Polska rozbudowane (OVH rich -> arch -> Share)",
+        "urls": [
+            "https://epg.ovh/pltv.gz",
+            "https://epg.ovh/plar.gz",
+            "https://epgshare01.online/epgshare01/epg_ripper_PL1.xml.gz",
+            "https://epg.pw/xmltv/epg.xml.gz",
+        ],
+    },
+    {
+        "id": "EPGOVH_STD",
+        "label": "PL - EPG.OVH standard",
+        "urls": ["https://epg.ovh/pl.gz"],
+    },
+    {
+        "id": "EPGOVH_RICH",
+        "label": "PL - EPG.OVH rich",
+        "urls": ["https://epg.ovh/pltv.gz"],
+    },
+    {
+        "id": "EPGOVH_ARCH",
+        "label": "PL - EPG.OVH archiwum",
+        "urls": ["https://epg.ovh/plar.gz"],
+    },
+    {
+        "id": "EPGSHARE_PL1",
+        "label": "PL - EPGShare PL1",
+        "urls": ["https://epgshare01.online/epgshare01/epg_ripper_PL1.xml.gz"],
+    },
+    {
+        "id": "EPGPW_LITE",
+        "label": "GLOBAL - EPG.PW lite",
+        "urls": ["https://epg.pw/xmltv/epg_lite.xml.gz"],
+    },
+    {
+        "id": "EPGPW_ALL",
+        "label": "GLOBAL - EPG.PW full",
+        "urls": ["https://epg.pw/xmltv/epg.xml.gz"],
+    },
+    {
+        "id": "EPGSHARE_UK1",
+        "label": "UK - EPGShare UK1",
+        "urls": ["https://epgshare01.online/epgshare01/epg_ripper_UK1.xml.gz"],
+    },
+    {
+        "id": "EPGSHARE_DE1",
+        "label": "DE - EPGShare DE1",
+        "urls": ["https://epgshare01.online/epgshare01/epg_ripper_DE1.xml.gz"],
+    },
+    {
+        "id": "EPGSHARE_FR1",
+        "label": "FR - EPGShare FR1",
+        "urls": ["https://epgshare01.online/epgshare01/epg_ripper_FR1.xml.gz"],
+    },
+    {
+        "id": "EPGSHARE_IT1",
+        "label": "IT - EPGShare IT1",
+        "urls": ["https://epgshare01.online/epgshare01/epg_ripper_IT1.xml.gz"],
+    },
+    {
+        "id": "EPGSHARE_CZ1",
+        "label": "CZ - EPGShare CZ1",
+        "urls": ["https://epgshare01.online/epgshare01/epg_ripper_CZ1.xml.gz"],
+    },
+    {
+        "id": "EPGSHARE_SK1",
+        "label": "SK - EPGShare SK1",
+        "urls": ["https://epgshare01.online/epgshare01/epg_ripper_SK1.xml.gz"],
+    },
+    {
+        "id": "CUSTOM",
+        "label": "--- Własny URL ---",
+        "urls": [],
+    },
+]
+SOURCE_CHOICES = [(item["id"], item["label"]) for item in SOURCE_DEFINITIONS]
+SOURCE_MAP = dict([(item["id"], item) for item in SOURCE_DEFINITIONS])
+
 
 def get_lang():
     try:
-        lang = language.getLanguage()
-        return "pl" if "pl" in lang.lower() else "en"
-    except: return "en"
+        code = language.getLanguage() or ""
+        return "pl" if "pl" in code.lower() else "en"
+    except Exception:
+        return "en"
 
-lang_code = get_lang()
+
+LANG = get_lang()
 
 TR = {
-    "header": { "pl": f"Simple IPTV EPG v{PLUGIN_VERSION} (Fast)", "en": f"Simple IPTV EPG v{PLUGIN_VERSION} (Fast)" },
-    "support_text": { "pl": "Wesprzyj rozwój wtyczki (Buy Coffee)", "en": "Support development (Buy Coffee)" },
-    "author_details": { "pl": "Twórca: Paweł Pawełek | Data: 30.11.2025 | email: aio-iptv@wp.pl", "en": "Author: Paweł Pawełek | Date: 30.11.2025 | email: aio-iptv@wp.pl" },
-    "help_arrows": { "pl": "< Zmień źródło strzałkami Lewo/Prawo >", "en": "< Change source using Left/Right arrows >" },
-    "source_label": { "pl": "Wybierz Źródło EPG:", "en": "Select EPG Source:" },
-    "custom_label": { "pl": "   >> Wpisz własny URL:", "en": "   >> Enter Custom URL:" },
-    "map_file_label": { "pl": "Plik mapowania (Cache):", "en": "Mapping File (Cache):" },
-    "autoupdate_label": { "pl": "Auto-Aktualizacja (co 24h):", "en": "Auto-Update (every 24h):" },
-    "btn_hide": { "pl": "Ukryj w tle", "en": "Hide in background" }, 
-    "btn_import": { "pl": "Importuj EPG", "en": "Import EPG" },
-    "btn_map": { "pl": "Mapuj Kanały", "en": "Map Channels" },
-    "btn_update": { "pl": "Aktualizuj Wtyczkę", "en": "Update Plugin" },
-    "status_ready": { "pl": "Gotowy. Wybierz opcję z menu poniżej.\n", "en": "Ready. Select an option from the menu below.\n" },
-    "downloading": { "pl": "Pobieranie pliku EPG...", "en": "Downloading EPG file..." },
-    "success": { "pl": "ZAKOŃCZONO!\nZaimportowano XML: {} | Połączono z SAT: {}", "en": "SUCCESS!\nXML Imported: {} | SAT Linked: {}" },
-    "restart_title": { "pl": "EPG Zaktualizowane pomyślnie!\nWymagany restart GUI. Zrestartować teraz?", "en": "EPG Updated Successfully!\nGUI Restart required. Restart now?" },
-    "mapping_start": { "pl": "Rozpoczynam mapowanie kanałów...", "en": "Starting channel mapping process..." },
-    "mapping_success": { "pl": "Mapowanie zakończone! Zmapowano kanałów: {}", "en": "Mapping complete! Channels mapped: {}" },
-    "no_map": { "pl": "Brak pliku mapowania! Najpierw wykonaj 'Mapuj'.", "en": "No mapping file found! Please run 'Map Channels' first." },
-    "check_update": { "pl": "Sprawdzanie dostępności aktualizacji na GitHub...", "en": "Checking for updates on GitHub..." },
-    "update_ok": { "pl": "Posiadasz najnowszą wersję wtyczki.", "en": "You have the latest version installed." },
-    "update_avail": { "pl": "Dostępna nowa wersja: {}\nCzy chcesz zaktualizować wtyczkę teraz?", "en": "New version available: {}\nDo you want to update the plugin now?" },
-    "update_start": { "pl": "Pobieranie i instalowanie aktualizacji...", "en": "Downloading and installing update..." },
-    "update_done": { "pl": "Aktualizacja zakończona sukcesem!\nWymagany restart GUI.", "en": "Update successful!\nGUI Restart is required." },
-    "update_fail": { "pl": "Aktualizacja nieudana. Sprawdź połączenie lub logi.", "en": "Update failed. Check internet connection or logs." },
-    "timeout_error": { "pl": "BŁĄD: Przekroczono limit czasu (45 min)! Plik jest zbyt duży.", "en": "ERROR: Timeout (45 min)! Source file is too big." },
-    "import_crash": { "pl": "CRASH: Wystąpił błąd krytyczny: {}", "en": "CRASH: Critical error: {}" },
-    "xml_url_dead": { "pl": "BŁĄD: Wybrane źródło XML jest niedostępne (Offline/404)!", "en": "ERROR: Selected XML Source is unreachable (Offline/404)!" },
-    "sat_smart_match": { "pl": "Inteligentne łączenie (SAT <-> IPTV)...", "en": "Smart Linking (SAT <-> IPTV)..." },
-    "sat_fallback": { "pl": "Uzupełnianie braków z SAT...", "en": "Filling gaps from SAT..." },
-    "hidden_msg": { "pl": "Wtyczka pracuje w tle.\nMożesz oglądać TV. Powiadomię Cię komunikatem, gdy skończę.", "en": "Plugin running in background.\nYou can watch TV. I will notify you via popup when done." }
+    "header": {
+        "pl": "%s v%s" % (PLUGIN_TITLE, PLUGIN_VERSION),
+        "en": "%s v%s" % (PLUGIN_TITLE, PLUGIN_VERSION),
+    },
+    "support_text": {
+        "pl": "Wesprzyj rozwój wtyczki (Buy Coffee)",
+        "en": "Support the plugin (Buy Coffee)",
+    },
+    "author_details": {
+        "pl": "Twórca: Paweł Pawełek | email: aio-iptv@wp.pl",
+        "en": "Author: Paweł Pawełek | email: aio-iptv@wp.pl",
+    },
+    "build_details": {
+        "pl": "Wersja: %s | Python3 | Silnik AIO + klon SAT v2" % PLUGIN_VERSION,
+        "en": "Version: %s | Python3 | AIO engine + SAT clone v2" % PLUGIN_VERSION,
+    },
+    "help_arrows": {
+        "pl": "< Zmień źródło strzałkami Lewo/Prawo >",
+        "en": "< Change source using Left/Right arrows >",
+    },
+    "source_label": {"pl": "Wybierz źródło EPG:", "en": "Select EPG source:"},
+    "custom_label": {"pl": "   >> Własny URL XML/XML.GZ:", "en": "   >> Custom XML/XML.GZ URL:"},
+    "map_file_label": {"pl": "Plik cache mapowania:", "en": "Mapping cache file:"},
+    "autoupdate_label": {"pl": "Auto-import co 24h:", "en": "Auto-import every 24h:"},
+    "import_days_label": {"pl": "Zakres importu (dni):", "en": "Import range (days):"},
+    "btn_hide": {"pl": "Ukryj w tle", "en": "Hide in background"},
+    "btn_import": {"pl": "Importuj EPG", "en": "Import EPG"},
+    "btn_map": {"pl": "Mapuj kanały", "en": "Map channels"},
+    "btn_update": {"pl": "Aktualizuj wtyczkę", "en": "Update plugin"},
+    "status_ready": {
+        "pl": "Gotowy. Wersja 2.2.1: komplet plików repo, poprawiony updater GitHub i pełna paczka.\n",
+        "en": "Ready. Version 2.2.1: complete repo files, fixed GitHub updater and full package.\n",
+    },
+    "hidden_msg": {
+        "pl": "Wtyczka działa w tle. Po zakończeniu pokażę komunikat.",
+        "en": "Plugin is running in background. A notification will be shown when finished.",
+    },
+    "busy": {
+        "pl": "Zadanie już trwa. Poczekaj na zakończenie poprzedniego importu.",
+        "en": "A job is already running. Please wait until it finishes.",
+    },
+    "scan_start": {
+        "pl": "Analiza bukietów i kanałów live...",
+        "en": "Scanning bouquets and live channels...",
+    },
+    "scan_done": {
+        "pl": "Live IPTV: {iptv} | SAT: {sat} | Pominięto VOD/serie: {skipped}",
+        "en": "Live IPTV: {iptv} | SAT: {sat} | Skipped VOD/series: {skipped}",
+    },
+    "download_try": {"pl": "Próba źródła {}/{}", "en": "Trying source {}/{}"},
+    "download_ok": {"pl": "Źródło działa: {}", "en": "Source works: {}"},
+    "download_fail": {"pl": "Nie udało się pobrać żadnego źródła EPG.", "en": "Unable to download any EPG source."},
+    "clone_start": {"pl": "Kopiowanie EPG z kanałów SAT do IPTV...", "en": "Cloning SAT EPG to IPTV..."},
+    "clone_done": {"pl": "SAT sklonowano dla kanałów: {}", "en": "SAT cloned for channels: {}"},
+    "mapping_start": {"pl": "Budowanie mapowania XMLTV...", "en": "Building XMLTV mapping..."},
+    "mapping_cache": {"pl": "Używam zapisanego cache mapowania.", "en": "Using saved mapping cache."},
+    "mapping_saved": {"pl": "Zapisano mapowanie. Grupy: {groups} | XML: {xml}", "en": "Mapping saved. Groups: {groups} | XML: {xml}"},
+    "mapping_empty": {"pl": "Nie znaleziono dopasowań XMLTV dla kanałów live.", "en": "No XMLTV matches found for live channels."},
+    "import_start": {"pl": "Import XMLTV do pamięci EPG...", "en": "Importing XMLTV into EPG cache..."},
+    "import_done": {
+        "pl": "ZAKOŃCZONO!\nKanały SAT: {sat}\nKanały XML: {xml_channels}\nZdarzenia XML: {xml_events}",
+        "en": "DONE!\nSAT channels: {sat}\nXML channels: {xml_channels}\nXML events: {xml_events}",
+    },
+    "cache_cleared": {"pl": "Cache i pliki tymczasowe zostały wyczyszczone.", "en": "Cache and temporary files were cleared."},
+    "update_start": {"pl": "Aktualizacja wtyczki...", "en": "Updating plugin..."},
+    "update_ok": {"pl": "Aktualizacja zakończona. Zrestartuj GUI Enigmy.", "en": "Update finished. Restart Enigma GUI."},
+    "update_fail": {"pl": "Aktualizacja nie powiodła się: {}", "en": "Update failed: {}"},
+    "fatal": {"pl": "Błąd krytyczny: {}", "en": "Fatal error: {}"},
+    "background_done": {"pl": "Auto-import EPG zakończony.", "en": "Automatic EPG import finished."},
+    "nothing_to_do": {"pl": "Nie znaleziono kanałów IPTV live do przetworzenia.", "en": "No live IPTV channels found."},
+    "mapping_only_done": {"pl": "Mapowanie gotowe. XML ID: {}", "en": "Mapping ready. XML IDs: {}"},
 }
 
-def _(key): return TR[key].get(lang_code, TR[key]["en"]) if key in TR else key
+
+def _(key):
+    return TR.get(key, {}).get(LANG, TR.get(key, {}).get("en", key))
+
 
 config.plugins.SimpleIPTV_EPG = ConfigSubsection()
-
-EPG_SOURCES = [
-    ("https://epgshare01.online/epgshare01/epg_ripper_PL1.xml.gz", "PL - EPG Share (Polecane)"),
-    ("http://epg.ovh/pl.xml.gz", "PL - EPG.OVH"),
-    ("https://epg.pw/xmltv/epg.xml", "EPG.PW (Multi-Language)"),
-    ("https://iptv-org.github.io/epg/guides/pl.xml.gz", "PL - IPTV-Org"),
-    ("https://epgshare01.online/epgshare01/epg_ripper_ALL_SOURCES1.xml.gz", "GLOBAL - All Sources (HUGE FILE!)"),
-    ("https://epgshare01.online/epgshare01/epg_ripper_UK1.xml.gz", "UK - United Kingdom"),
-    ("https://epgshare01.online/epgshare01/epg_ripper_DE1.xml.gz", "DE - Germany/DACH"),
-    ("https://epgshare01.online/epgshare01/epg_ripper_IT1.xml.gz", "IT - Italy"),
-    ("https://epgshare01.online/epgshare01/epg_ripper_ES1.xml.gz", "ES - Spain"),
-    ("CUSTOM", "--- Custom URL ---")
-]
-
-config.plugins.SimpleIPTV_EPG.source_select = ConfigSelection(default="https://epgshare01.online/epgshare01/epg_ripper_PL1.xml.gz", choices=EPG_SOURCES)
-config.plugins.SimpleIPTV_EPG.custom_url = ConfigText(default="http://", fixed_size=False, visible_width=80)
+config.plugins.SimpleIPTV_EPG.source_select = ConfigSelection(default="AUTO_AIO", choices=SOURCE_CHOICES)
+config.plugins.SimpleIPTV_EPG.custom_url = ConfigText(default="https://", fixed_size=False, visible_width=80)
 config.plugins.SimpleIPTV_EPG.mapping_file = ConfigText(default="/etc/enigma2/iptv_mapping.json", fixed_size=False)
-config.plugins.SimpleIPTV_EPG.auto_update = ConfigYesNo(default=False)
+config.plugins.SimpleIPTV_EPG.auto_update = ConfigYesNo(default=True)
+config.plugins.SimpleIPTV_EPG.import_days = ConfigSelection(default="3", choices=[("2", "2"), ("3", "3"), ("5", "5"), ("7", "7")])
 config.plugins.SimpleIPTV_EPG.last_update = ConfigText(default="0", fixed_size=False)
+config.plugins.SimpleIPTV_EPG.last_source = ConfigText(default="", fixed_size=False)
 
-def write_log(msg):
+
+def save_plugin_config():
     try:
-        with open("/tmp/simple_epg.log", "a") as f:
-            f.write(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}\n")
-    except: pass
+        config.plugins.SimpleIPTV_EPG.save()
+    except Exception:
+        pass
 
-def save_json(data, path):
-    try:
-        with open(path, 'w') as f: json.dump(data, f, indent=4)
-    except: pass
 
-class EPGWorker:
+class EPGWorker(object):
     def __init__(self):
-        self.lock = threading.Lock()
-        
-    def get_url(self):
-        val = config.plugins.SimpleIPTV_EPG.source_select.value
-        return config.plugins.SimpleIPTV_EPG.custom_url.value if val == "CUSTOM" else val
-    
+        self._lock = threading.Lock()
+        self.running = False
+
+    def _selected_sources(self):
+        source_id = config.plugins.SimpleIPTV_EPG.source_select.value
+        if source_id == "CUSTOM":
+            url = (config.plugins.SimpleIPTV_EPG.custom_url.value or "").strip()
+            return [("CUSTOM", url)] if url and url.startswith(("http://", "https://")) else []
+        source = SOURCE_MAP.get(source_id, SOURCE_MAP["AUTO_AIO"])
+        out = []
+        for url in source.get("urls", []):
+            out.append((source_id, url))
+        return out
+
+    def _temp_target_for_url(self, url):
+        ensure_temp_dir()
+        lower = (url or "").lower()
+        return TEMP_XML_PATH if lower.endswith(".gz") else TEMP_XML_FALLBACK
+
+    def _download_selected_source(self, log_cb):
+        sources = self._selected_sources()
+        total = len(sources)
+        for idx, (source_key, url) in enumerate(sources):
+            if log_cb:
+                log_cb(_("download_try").format(idx + 1, total) + ": %s" % url)
+            target = self._temp_target_for_url(url)
+            if download_file(url, target, timeout=180, retries=2, log_cb=log_cb) and validate_xmltv_file(target):
+                config.plugins.SimpleIPTV_EPG.last_source.value = url
+                save_plugin_config()
+                if log_cb:
+                    log_cb(_("download_ok").format(url))
+                return target, source_key, url
+        return None, None, None
+
+    def _load_mapping_cache(self, mapping_path, services_signature, source_key):
+        payload = load_json(mapping_path)
+        if not isinstance(payload, dict):
+            return None
+        meta = payload.get("_meta", {}) if isinstance(payload.get("_meta"), dict) else {}
+        mapping = payload.get("mapping") if isinstance(payload.get("mapping"), dict) else None
+        if not mapping:
+            if payload and "_meta" not in payload:
+                return payload
+            return None
+        if meta.get("services_signature") != services_signature:
+            return None
+        if meta.get("source_key") != source_key:
+            return None
+        return mapping
+
+    def _save_mapping_cache(self, mapping_path, mapping, services_signature, source_key, stats):
+        payload = {
+            "_meta": {
+                "plugin_version": PLUGIN_VERSION,
+                "services_signature": services_signature,
+                "source_key": source_key,
+                "saved_at": int(time.time()),
+                "groups": int(stats.get("groups", 0)),
+                "xml_ids": int(stats.get("xml_ids", 0)),
+            },
+            "mapping": mapping,
+        }
+        atomic_write_json(payload, mapping_path)
+
+    def clear_cache(self):
+        mapping_path = config.plugins.SimpleIPTV_EPG.mapping_file.value
+        for path in [mapping_path, TEMP_XML_PATH, TEMP_XML_FALLBACK, "/tmp/simpleiptvepg/mapping_debug.json"]:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+
+    def run_update(self, callback_log=None):
+        if self.running:
+            if callback_log:
+                callback_log(_("busy"))
+            return False
+        if not self._lock.acquire(False):
+            if callback_log:
+                callback_log(_("busy"))
+            return False
+        self.running = True
+        try:
+            ok, message = update_plugin_package(log_cb=callback_log)
+            if ok:
+                if callback_log:
+                    callback_log(_("update_ok"))
+                return True
+            if callback_log:
+                callback_log(_("update_fail").format(message))
+            return False
+        finally:
+            self.running = False
+            try:
+                self._lock.release()
+            except Exception:
+                pass
+
+    def run_mapping_only(self, callback_log=None):
+        if self.running:
+            if callback_log:
+                callback_log(_("busy"))
+            return False
+        if not self._lock.acquire(False):
+            if callback_log:
+                callback_log(_("busy"))
+            return False
+        self.running = True
+        try:
+            return self._run_mapping_core(callback_log)
+        finally:
+            self.running = False
+            try:
+                self._lock.release()
+            except Exception:
+                pass
+
+    def _run_mapping_core(self, callback_log):
+        if callback_log:
+            callback_log(_("scan_start"))
+        scan = scan_bouquet_services()
+        if callback_log:
+            callback_log(_("scan_done").format(iptv=len(scan.get("iptv", [])), sat=len(scan.get("sat_services", [])), skipped=scan.get("skipped", 0)))
+        services = scan.get("iptv", [])
+        if not services:
+            if callback_log:
+                callback_log(_("nothing_to_do"))
+            return False
+        xml_path, source_key, _url = self._download_selected_source(callback_log)
+        if not xml_path:
+            if callback_log:
+                callback_log(_("download_fail"))
+            return False
+        if callback_log:
+            callback_log(_("mapping_start"))
+        mapper = AutoMapper(log_callback=callback_log)
+        mapping, stats = mapper.generate_mapping(services, xml_path)
+        if not mapping:
+            if callback_log:
+                callback_log(_("mapping_empty"))
+            return False
+        self._save_mapping_cache(config.plugins.SimpleIPTV_EPG.mapping_file.value, mapping, scan.get("services_signature", ""), source_key, stats)
+        if callback_log:
+            callback_log(_("mapping_saved").format(groups=stats.get("groups", 0), xml=stats.get("xml_ids", 0)))
+            callback_log(_("mapping_only_done").format(len(mapping)))
+        return True
+
     def run_import(self, callback_log=None, silent=False):
-        url = self.get_url()
-        ext = ".xml.gz" if ".gz" in url else ".xml"
-        temp_path = "/tmp/epg_temp" + ext
+        if self.running:
+            if callback_log:
+                callback_log(_("busy"))
+            return False
+        if not self._lock.acquire(False):
+            if callback_log:
+                callback_log(_("busy"))
+            return False
+        self.running = True
+        try:
+            return self._run_import_core(callback_log=callback_log, silent=silent)
+        finally:
+            self.running = False
+            try:
+                self._lock.release()
+            except Exception:
+                pass
+
+    def _run_import_core(self, callback_log=None, silent=False):
+        if callback_log:
+            callback_log(_("scan_start"))
+        scan = scan_bouquet_services()
+        iptv_services = scan.get("iptv", [])
+        sat_services = scan.get("sat_services", [])
+        skipped = scan.get("skipped", 0)
+        services_signature = scan.get("services_signature", "")
+        if callback_log:
+            callback_log(_("scan_done").format(iptv=len(iptv_services), sat=len(sat_services), skipped=skipped))
+        if not iptv_services:
+            if callback_log:
+                callback_log(_("nothing_to_do"))
+            return False
+
+        xml_path, source_key, _url = self._download_selected_source(callback_log)
+        if not xml_path:
+            if callback_log:
+                callback_log(_("download_fail"))
+            return False
+
+        import_days = int(config.plugins.SimpleIPTV_EPG.import_days.value or "3")
         injector = EPGInjector()
-        injected_refs = set()
 
-        def progress_wrapper(msg):
-            if callback_log: callback_log(msg)
+        if callback_log:
+            callback_log(_("clone_start"))
+        clone_stats = clone_sat_to_iptv(injector, iptv_services, sat_services, days_ahead=import_days, log_cb=callback_log)
+        cloned_refs = clone_stats.get("injected_refs", set())
+        if callback_log:
+            callback_log(_("clone_done").format(clone_stats.get("channels", 0)))
 
-        if not check_url_alive(url):
-            if callback_log: callback_log(_("xml_url_dead"))
-            return False
+        remaining_services = [service for service in iptv_services if service.get("full_ref") not in cloned_refs]
+        mapping_path = config.plugins.SimpleIPTV_EPG.mapping_file.value
+        mapping = self._load_mapping_cache(mapping_path, services_signature, source_key)
 
-        if callback_log: callback_log(_("sat_smart_match"))
-        cloned_refs = inject_sat_clone_by_name(injector, log_cb=progress_wrapper)
-        injected_refs.update(cloned_refs)
-        
-        if callback_log: callback_log(_("downloading"))
-        write_log("Start Download...")
-        
-        if not download_file(url, temp_path, retries=3, timeout=600):
-            if callback_log: callback_log("Download Error!")
-            return False
-            
-        mapper = AutoMapper(log_callback=write_log)
-        def mapping_progress(current, total):
-            if callback_log and current % 100 == 0: 
-                percent = int(current * 100 / max(total, 1))
-                callback_log(f"Mapping: {percent}% ({current}/{total})")
+        if mapping:
+            if callback_log:
+                callback_log(_("mapping_cache"))
+        else:
+            if callback_log:
+                callback_log(_("mapping_start"))
+            mapper = AutoMapper(log_callback=callback_log)
+            mapping, stats = mapper.generate_mapping(remaining_services, xml_path)
+            if mapping:
+                self._save_mapping_cache(mapping_path, mapping, services_signature, source_key, stats)
+                if callback_log:
+                    callback_log(_("mapping_saved").format(groups=stats.get("groups", 0), xml=stats.get("xml_ids", 0)))
 
-        mapping = mapper.generate_mapping(temp_path, exclude_refs=injected_refs, progress_callback=mapping_progress)
+        if not mapping:
+            config.plugins.SimpleIPTV_EPG.last_update.value = str(int(time.time()))
+            save_plugin_config()
+            if callback_log:
+                callback_log(_("mapping_empty"))
+                callback_log(_("import_done").format(sat=clone_stats.get("channels", 0), xml_channels=0, xml_events=0))
+            return True
 
-        if callback_log: callback_log("Import XML...")
-        write_log("Start Parsing XML...")
-        parser = EPGParser(temp_path)
-        
-        count_xml = 0
-        batch = 0
-        
-        for service_ref, event_data in parser.load_events(mapping, progress_cb=progress_wrapper):
-            if service_ref in injected_refs: continue
-            
-            injector.add_event(service_ref, event_data)
-            injected_refs.add(service_ref)
-            count_xml += 1
-            batch += 1
-            
-            if batch >= 2000:
+        if callback_log:
+            callback_log(_("import_start"))
+        parser = EPGParser(xml_path)
+        xml_channels = set()
+        xml_events = 0
+        imported_refs = set(cloned_refs)
+        buffer_counter = 0
+
+        def parser_progress(message):
+            if callback_log:
+                callback_log(message)
+
+        for service_ref, payload, channel_id in parser.iter_events(mapping, days_ahead=import_days, progress_cb=parser_progress):
+            injector.add_event(service_ref, payload)
+            xml_channels.add(channel_id)
+            imported_refs.add(service_ref)
+            xml_events += 1
+            buffer_counter += 1
+            if buffer_counter >= 4000:
                 injector.commit()
-                batch = 0
-        
+                buffer_counter = 0
         injector.commit()
 
-        if callback_log: callback_log(_("sat_fallback"))
-        count_sat_fallback = inject_sat_fallback(injector, injected_refs, log_cb=write_log)
-        
         config.plugins.SimpleIPTV_EPG.last_update.value = str(int(time.time()))
-        config.plugins.SimpleIPTV_EPG.save()
-        
-        total_sat = len(cloned_refs) + count_sat_fallback
-        msg = _("success").format(count_xml, total_sat)
-        if callback_log: callback_log(msg)
-        
-        try: os.remove(temp_path)
-        except: pass
-        
+        save_plugin_config()
+
+        if callback_log:
+            callback_log(_("import_done").format(sat=clone_stats.get("channels", 0), xml_channels=len(xml_channels), xml_events=xml_events))
+        if silent and ACTIVE_SESSION is not None:
+            try:
+                reactor.callFromThread(ACTIVE_SESSION.open, MessageBox, _("background_done"), MessageBox.TYPE_INFO, timeout=5)
+            except Exception:
+                pass
         return True
+
 
 class IPTV_EPG_Config(ConfigListScreen, Screen):
     skin = """
-        <screen name="IPTV_EPG_Config" position="center,center" size="900,680" title="Simple IPTV EPG v1.3 (Global)">
-            <widget name="qrcode" position="20,10" size="130,130" transparent="1" alphatest="on" />
-            <widget name="support_text" position="160,30" size="700,30" font="Regular;24" foregroundColor="#00ff00" transparent="1" />
-            <widget name="author_info" position="160,70" size="700,50" font="Regular;20" foregroundColor="#aaaaaa" transparent="1" />
-            <widget name="header_title" position="20,150" size="860,50" font="Regular;34" halign="center" valign="center" foregroundColor="#fcc400" backgroundColor="#202020" transparent="1" />
-            <widget name="help_arrows" position="20,200" size="860,25" font="Regular;20" halign="center" foregroundColor="#00aaff" transparent="1" />
-            <widget name="config" position="20,230" size="860,150" font="Regular;22" itemHeight="35" scrollbarMode="showOnDemand" />
-            <widget name="label_status" position="20,400" size="860,30" font="Regular;22" foregroundColor="#00aaff" />
-            <widget name="status" position="20,435" size="860,170" font="Regular;18" foregroundColor="#dddddd" backgroundColor="#101010" />
-            <eLabel position="20,620" size="860,2" backgroundColor="#555555" />
-            <ePixmap pixmap="skin_default/buttons/red.png" position="30,630" size="30,40" alphatest="on" />
-            <widget name="key_red" position="65,630" zPosition="1" size="180,40" font="Regular;20" valign="center" transparent="1" />
-            <ePixmap pixmap="skin_default/buttons/green.png" position="250,630" size="30,40" alphatest="on" />
-            <widget name="key_green" position="285,630" zPosition="1" size="180,40" font="Regular;20" valign="center" transparent="1" />
-            <ePixmap pixmap="skin_default/buttons/yellow.png" position="470,630" size="30,40" alphatest="on" />
-            <widget name="key_yellow" position="505,630" zPosition="1" size="180,40" font="Regular;20" valign="center" transparent="1" />
-            <ePixmap pixmap="skin_default/buttons/blue.png" position="690,630" size="30,40" alphatest="on" />
-            <widget name="key_blue" position="725,630" zPosition="1" size="180,40" font="Regular;20" valign="center" transparent="1" />
+        <screen name="IPTV_EPG_Config" position="center,center" size="950,690" title="Simple IPTV EPG v2.2">
+            <widget name="qrcode" position="20,15" size="120,120" transparent="1" alphatest="on" />
+            <widget name="author_logo" position="785,15" size="140,140" transparent="1" alphatest="on" />
+            <widget name="support_text" position="155,22" size="610,32" font="Regular;24" foregroundColor="#00ff00" transparent="1" />
+            <widget name="author_info" position="155,58" size="610,28" font="Regular;18" foregroundColor="#cccccc" transparent="1" />
+            <widget name="last_info" position="155,90" size="610,28" font="Regular;18" foregroundColor="#aaaaaa" transparent="1" />
+            <widget name="header_title" position="20,150" size="910,45" font="Regular;34" halign="center" valign="center" foregroundColor="#fcc400" transparent="1" />
+            <widget name="help_arrows" position="20,195" size="910,24" font="Regular;20" halign="center" foregroundColor="#00aaff" transparent="1" />
+            <widget name="config" position="20,230" size="910,150" font="Regular;22" itemHeight="35" scrollbarMode="showOnDemand" />
+            <widget name="label_status" position="20,395" size="910,28" font="Regular;22" foregroundColor="#00aaff" transparent="1" />
+            <widget name="status" position="20,430" size="910,175" font="Regular;18" foregroundColor="#dddddd" backgroundColor="#101010" />
+            <eLabel position="20,620" size="910,2" backgroundColor="#555555" />
+            <ePixmap pixmap="skin_default/buttons/red.png" position="35,632" size="30,40" alphatest="on" />
+            <widget name="key_red" position="70,632" zPosition="1" size="180,40" font="Regular;20" valign="center" transparent="1" />
+            <ePixmap pixmap="skin_default/buttons/green.png" position="260,632" size="30,40" alphatest="on" />
+            <widget name="key_green" position="295,632" zPosition="1" size="180,40" font="Regular;20" valign="center" transparent="1" />
+            <ePixmap pixmap="skin_default/buttons/yellow.png" position="500,632" size="30,40" alphatest="on" />
+            <widget name="key_yellow" position="535,632" zPosition="1" size="180,40" font="Regular;20" valign="center" transparent="1" />
+            <ePixmap pixmap="skin_default/buttons/blue.png" position="735,632" size="30,40" alphatest="on" />
+            <widget name="key_blue" position="770,632" zPosition="1" size="180,40" font="Regular;20" valign="center" transparent="1" />
         </screen>
     """
 
     def __init__(self, session):
         Screen.__init__(self, session)
-        self["header_title"] = Label(_("header"))
+        global ACTIVE_SESSION
+        ACTIVE_SESSION = session
+
+        self.worker = GLOBAL_WORKER
         self["qrcode"] = Pixmap()
+        self["author_logo"] = Pixmap()
         self["support_text"] = Label(_("support_text"))
+        self["author_info"] = Label(_("author_details"))
+        self["last_info"] = Label(self._build_last_info())
+        self["header_title"] = Label(_("header"))
         self["help_arrows"] = Label(_("help_arrows"))
-        self["author_info"] = Label(_("author_details").format(datetime.now().strftime("%d.%m.%Y")))
         self["key_red"] = Label(_("btn_hide"))
         self["key_green"] = Label(_("btn_import"))
         self["key_yellow"] = Label(_("btn_map"))
         self["key_blue"] = Label(_("btn_update"))
-        
         self["label_status"] = Label("Log:")
         self["status"] = ScrollLabel(_("status_ready"))
-        
-        self.worker = EPGWorker()
+
         self.list = []
         self.createConfigList()
         ConfigListScreen.__init__(self, self.list)
-        
-        # KEY MAPPING: 
-        # cancel (EXIT) - Zamyka
-        # red - Ukrywa
-        self["actions"] = ActionMap(["SetupActions", "ColorActions", "DirectionActions"], {
+
+        self["actions"] = ActionMap(["SetupActions", "ColorActions", "DirectionActions", "MenuActions"], {
             "red": self.minimize_window,
             "green": self.start_import_gui,
-            "yellow": self.start_mapping,
-            "blue": self.check_github_update,
-            "cancel": self.close,        
+            "yellow": self.start_mapping_gui,
+            "blue": self.update_plugin_gui,
+            "menu": self.clear_cache_gui,
+            "cancel": self.close,
             "save": self.start_import_gui,
             "left": self.keyLeft,
-            "right": self.keyRight
-        }, -1) 
-        
-        self.onLayoutFinish.append(self.load_qr_code)
+            "right": self.keyRight,
+        }, -1)
 
-    def load_qr_code(self):
+        self.onLayoutFinish.append(self.load_assets)
+
+    def _build_last_info(self):
         try:
-            plugin_path = os.path.dirname(__file__)
+            last_update = int(config.plugins.SimpleIPTV_EPG.last_update.value or "0")
+        except Exception:
+            last_update = 0
+        line = _("build_details")
+        if last_update <= 0:
+            return "%s | Ostatni import: brak" % line
+        return "%s | Ostatni import: %s" % (line, datetime.fromtimestamp(last_update).strftime("%d.%m.%Y %H:%M"))
+
+    def load_assets(self):
+        plugin_path = os.path.dirname(__file__)
+        try:
             qr_path = os.path.join(plugin_path, "Kod_QR_buycoffee.png")
-            if os.path.exists(qr_path): self["qrcode"].instance.setPixmapFromFile(qr_path)
-        except: pass
+            if os.path.exists(qr_path):
+                self["qrcode"].instance.setPixmapFromFile(qr_path)
+        except Exception:
+            pass
+        try:
+            logo_path = os.path.join(plugin_path, "author_logo.png")
+            if os.path.exists(logo_path):
+                self["author_logo"].instance.setPixmapFromFile(logo_path)
+        except Exception:
+            pass
 
     def createConfigList(self):
-        self.list = []
-        self.list.append(getConfigListEntry(_("source_label"), config.plugins.SimpleIPTV_EPG.source_select))
+        self.list = [
+            getConfigListEntry(_("source_label"), config.plugins.SimpleIPTV_EPG.source_select),
+        ]
         if config.plugins.SimpleIPTV_EPG.source_select.value == "CUSTOM":
             self.list.append(getConfigListEntry(_("custom_label"), config.plugins.SimpleIPTV_EPG.custom_url))
         self.list.append(getConfigListEntry(_("map_file_label"), config.plugins.SimpleIPTV_EPG.mapping_file))
         self.list.append(getConfigListEntry(_("autoupdate_label"), config.plugins.SimpleIPTV_EPG.auto_update))
+        self.list.append(getConfigListEntry(_("import_days_label"), config.plugins.SimpleIPTV_EPG.import_days))
 
     def updateConfigList(self):
         self.createConfigList()
         self["config"].setList(self.list)
-    def keyLeft(self): ConfigListScreen.keyLeft(self); self.updateConfigList()
-    def keyRight(self): ConfigListScreen.keyRight(self); self.updateConfigList()
+
+    def keyLeft(self):
+        ConfigListScreen.keyLeft(self)
+        self.updateConfigList()
+
+    def keyRight(self):
+        ConfigListScreen.keyRight(self)
+        self.updateConfigList()
 
     def minimize_window(self):
         self.hide()
         self.session.open(MessageBox, _("hidden_msg"), MessageBox.TYPE_INFO, timeout=5)
 
-    def log(self, message): reactor.callFromThread(self.gui_update_log, message)
-
     def gui_update_log(self, message):
         try:
-            if "[" in message and "%" in message:
-                 self["status"].setText(message)
-            else:
-                 t = datetime.now().strftime("%H:%M:%S")
-                 old = self["status"].getText()
-                 self["status"].setText(old + f"[{t}] {message}\n")
-                 self["status"].lastPage()
-        except: pass
+            stamp = datetime.now().strftime("%H:%M:%S")
+            old = self["status"].getText()
+            self["status"].setText(old + "[%s] %s\n" % (stamp, message))
+            self["status"].lastPage()
+            self["last_info"].setText(self._build_last_info())
+        except Exception:
+            pass
 
-    def animate_percent(self, prefix, current, total):
-        try:
-            percent = int(current * 100 / max(total, 1))
-            self["status"].setText(f"{prefix} | %: {percent}% ({current}/{total})")
-        except: pass
+    def log(self, message):
+        reactor.callFromThread(self.gui_update_log, str(message))
 
     def save_settings(self):
-        for x in self["config"].list: x[1].save()
-        config.plugins.SimpleIPTV_EPG.save()
+        for item in self["config"].list:
+            try:
+                item[1].save()
+            except Exception:
+                pass
+        save_plugin_config()
 
     def start_import_gui(self):
         self.save_settings()
+        if self.worker.running:
+            self.gui_update_log(_("busy"))
+            return
         self["status"].setText(_("status_ready"))
 
-        def _run_with_timeout():
+        def runner():
             try:
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(self.worker.run_import, callback_log=self.log, silent=False)
-                    result = future.result(timeout=OPERATION_TIMEOUT)
-                    if result: 
-                        reactor.callFromThread(self.gui_update_log, "OK! Finished.")
-                        reactor.callFromThread(self.ask_restart)
-                    else:
-                        reactor.callFromThread(self.gui_update_log, "IMPORT ERROR!")
-            except TimeoutError:
-                reactor.callFromThread(self.gui_update_log, _("timeout_error"))
-                reactor.callFromThread(self.session.open, MessageBox, _("timeout_error"), MessageBox.TYPE_ERROR)
-            except Exception as e:
-                reactor.callFromThread(self.gui_update_log, _("import_crash").format(e))
+                ok = self.worker.run_import(callback_log=self.log, silent=False)
+                if not ok:
+                    reactor.callFromThread(self.gui_update_log, _("fatal").format("import stopped"))
+            except Exception as error:
+                reactor.callFromThread(self.gui_update_log, _("fatal").format(error))
+                log_message("Import exception: %s" % error)
 
-        threading.Thread(target=_run_with_timeout, daemon=True).start()
+        threading.Thread(target=runner, daemon=True).start()
 
-    def ask_restart(self):
-        self.session.openWithCallback(self.do_restart, MessageBox, _("restart_title"), MessageBox.TYPE_YESNO)
-
-    def do_restart(self, answer):
-        if answer: from enigma import quitMainloop; quitMainloop(3)
-
-    def start_mapping(self):
+    def start_mapping_gui(self):
         self.save_settings()
-        self["status"].setText(_("mapping_start"))
-        threading.Thread(target=self.thread_mapping, daemon=True).start()
+        if self.worker.running:
+            self.gui_update_log(_("busy"))
+            return
+        self["status"].setText(_("status_ready"))
 
-    def thread_mapping(self):
-        try:
-            url = self.worker.get_url()
-            ext = ".xml.gz" if ".gz" in url else ".xml"
-            temp_path = "/tmp/epg_temp" + ext
-            
-            if not download_file(url, temp_path, retries=3, timeout=600):
-                reactor.callFromThread(self.gui_update_log, "Download FAIL")
-                return
+        def runner():
+            try:
+                ok = self.worker.run_mapping_only(callback_log=self.log)
+                if not ok:
+                    reactor.callFromThread(self.gui_update_log, _("fatal").format("mapping stopped"))
+            except Exception as error:
+                reactor.callFromThread(self.gui_update_log, _("fatal").format(error))
+                log_message("Mapping exception: %s" % error)
 
-            mapper = AutoMapper(log_callback=lambda msg: reactor.callFromThread(self.gui_update_log, msg))
-            
-            def progress_cb(current, total):
-                reactor.callFromThread(self.animate_percent, "Map", current, total)
+        threading.Thread(target=runner, daemon=True).start()
 
-            mapping = mapper.generate_mapping(temp_path, progress_callback=progress_cb, exclude_refs=set())
-            save_json(mapping, config.plugins.SimpleIPTV_EPG.mapping_file.value)
-            
-            reactor.callFromThread(self.gui_update_log, _("mapping_success").format(len(mapping)))
-        except Exception as e:
-            reactor.callFromThread(self.gui_update_log, f"ERROR: {e}")
+    def update_plugin_gui(self):
+        if self.worker.running:
+            self.gui_update_log(_("busy"))
+            return
+        self.gui_update_log(_("update_start"))
 
-    def check_github_update(self):
-        self.log(_("check_update"))
-        version_url = GITHUB_BASE_URL + "version"
-        getPage(str.encode(version_url)).addCallback(self.github_callback).addErrback(self.github_error)
+        def runner():
+            try:
+                ok = self.worker.run_update(callback_log=self.log)
+                if not ok:
+                    reactor.callFromThread(self.gui_update_log, _("update_fail").format("opkg"))
+            except Exception as error:
+                reactor.callFromThread(self.gui_update_log, _("update_fail").format(error))
 
-    def github_callback(self, data):
-        try:
-            remote_version = data.decode('utf-8').strip()
-            local_version = PLUGIN_VERSION
-            if remote_version > local_version:
-                self.log(f"New version found: {remote_version}")
-                # Używamy callFromThread na wszelki wypadek, jeśli callback przychodzi z innego wątku
-                reactor.callFromThread(self.session.openWithCallback, self.perform_update_question, MessageBox, _("update_avail").format(remote_version), MessageBox.TYPE_YESNO)
-            elif remote_version == local_version:
-                self.log(_("update_ok"))
-                reactor.callFromThread(self.session.open, MessageBox, _("update_ok") + f"\n(v{local_version})", MessageBox.TYPE_INFO)
-            else:
-                self.session.open(MessageBox, f"Dev/Test Version.\nGitHub: {remote_version} | Local: {local_version}", MessageBox.TYPE_INFO)
-        except: pass
+        threading.Thread(target=runner, daemon=True).start()
 
-    def github_error(self, error): 
-        reactor.callFromThread(self.session.open, MessageBox, "GitHub Error: " + str(error), MessageBox.TYPE_ERROR)
+    def clear_cache_gui(self):
+        self.worker.clear_cache()
+        self.gui_update_log(_("cache_cleared"))
 
-    def perform_update_question(self, answer):
-        if answer:
-            self["status"].setText(_("update_start"))
-            threading.Thread(target=self.thread_perform_update, daemon=True).start()
-
-    def thread_perform_update(self):
-        FILES = ["plugin.py", "epgcore.py", "automapper.py", "version"]
-        success = True
-        plugin_path = os.path.dirname(__file__)
-        try:
-            for fname in FILES:
-                url = GITHUB_BASE_URL + fname
-                target_tmp = f"/tmp/{fname}"
-                target_final = os.path.join(plugin_path, fname)
-                if download_file(url, target_tmp, retries=2, timeout=10):
-                    shutil.move(target_tmp, target_final)
-                    reactor.callFromThread(self.gui_update_log, f"Updated: {fname}")
-                else:
-                    success = False; break
-            if success: reactor.callFromThread(self.session.openWithCallback, self.do_restart, MessageBox, _("update_done"), MessageBox.TYPE_YESNO)
-            else: reactor.callFromThread(self.session.open, MessageBox, _("update_fail"), MessageBox.TYPE_ERROR)
-        except Exception as e:
-            reactor.callFromThread(self.gui_update_log, f"Update Crash: {e}")
 
 def AutoUpdateCheck():
-    if config.plugins.SimpleIPTV_EPG.auto_update.value:
-        try: last_upd = int(config.plugins.SimpleIPTV_EPG.last_update.value)
-        except: last_upd = 0
-        now = int(time.time())
-        if (now - last_upd) > 86400:
-            write_log("[AutoUpdate] Triggering background update...")
-            worker = EPGWorker()
-            threading.Thread(target=worker.run_import, kwargs={'silent': True}, daemon=True).start()
+    if config.plugins.SimpleIPTV_EPG.auto_update.value and GLOBAL_WORKER is not None:
+        try:
+            last_update = int(config.plugins.SimpleIPTV_EPG.last_update.value or "0")
+        except Exception:
+            last_update = 0
+        if int(time.time()) - last_update > 86400 and not GLOBAL_WORKER.running:
+            log_message("[AutoUpdate] Starting background import")
+            threading.Thread(target=GLOBAL_WORKER.run_import, kwargs={"silent": True}, daemon=True).start()
     reactor.callLater(3600, AutoUpdateCheck)
 
-def StartSession(**kwargs):
-    write_log("Plugin Loaded. Initializing AutoUpdate timer...")
-    reactor.callLater(60, AutoUpdateCheck)
 
-def main(session, **kwargs): session.open(IPTV_EPG_Config)
+def StartSession(**kwargs):
+    global AUTOUPDATE_STARTED
+    if not AUTOUPDATE_STARTED:
+        AUTOUPDATE_STARTED = True
+        reactor.callLater(60, AutoUpdateCheck)
+
+
+def main(session, **kwargs):
+    session.open(IPTV_EPG_Config)
+
 
 def Plugins(**kwargs):
     return [
-        PluginDescriptor(name="Simple IPTV EPG", description="International EPG Importer (Fast)", where=PluginDescriptor.WHERE_PLUGINMENU, icon="plugin.png", fnc=main),
-        PluginDescriptor(where=PluginDescriptor.WHERE_SESSIONSTART, fnc=StartSession)
+        PluginDescriptor(name=PLUGIN_TITLE, description="Fast IPTV XMLTV importer", where=PluginDescriptor.WHERE_PLUGINMENU, icon="plugin.png", fnc=main),
+        PluginDescriptor(where=PluginDescriptor.WHERE_SESSIONSTART, fnc=StartSession),
     ]
+
+
+GLOBAL_WORKER = EPGWorker()

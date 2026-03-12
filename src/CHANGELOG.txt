@@ -1,0 +1,14 @@
+# v2.2.1 Changelog
+
+- dodane kompletne pliki repozytorium do publikacji na GitHub
+- poprawiony `installer.sh` i opis instalacji
+- poprawiony updater we wtyczce: fallback do instalatora z GitHub
+- zachowana pełna nazwa pakietu: `enigma2-plugin-extensions-simpleiptvepg`
+- źródła przygotowane w strukturze `src/` zgodnej z instalatorem
+
+## Previous notes
+
+v2.2
+- poprawione mapowanie
+- poprawiony klon SAT
+- przywrócony przycisk aktualizacji
