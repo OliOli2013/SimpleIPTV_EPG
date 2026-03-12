@@ -6,7 +6,7 @@ REPO_URL="https://github.com/OliOli2013/SimpleIPTV_EPG/archive/refs/heads/main.z
 TEMP_DIR="/tmp/simple_epg_install"
 
 echo "================================================"
-echo "   INSTALLING SIMPLE IPTV EPG v1.0..."
+echo "   INSTALLING SIMPLE IPTV EPG v2.2.1"
 echo "================================================"
 
 # 1. Sprawdzenie Pythona
