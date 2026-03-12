@@ -1,33 +1,14 @@
-# v1.3 Changelog
+# v2.2.1 Changelog
 
-### 🇬🇧 English
-* **🚀 Core Engine Rewrite:** Switched Satellite scanning to direct `lamedb` parsing. Fixes the "0 SAT channels linked" issue on most images.
-* **📺 MAC/Stalker Support:** Added logic to correctly identify IPTV streams disguised as DVB references (`1:0:1...http`). EPG now works for MAC Portal/JediMaker lists.
-* **🔴 UI Improvement:** Red button is now mapped to **"Hide in Background"** (does not kill the process). Use physical *EXIT* button to close.
-* **🌍 New Source:** Added `EPG.PW` (Multi-Language) to the source list.
-* **⚡ Optimization:** Increased operation timeout to 45 minutes for huge XML files.
+- dodane kompletne pliki repozytorium do publikacji na GitHub
+- poprawiony `installer.sh` i opis instalacji
+- poprawiony updater we wtyczce: fallback do instalatora z GitHub
+- zachowana pełna nazwa pakietu: `enigma2-plugin-extensions-simpleiptvepg`
+- źródła przygotowane w strukturze `src/` zgodnej z instalatorem
 
-### 🇵🇱 Polski
-* **🚀 Nowy Silnik SAT:** Wtyczka czyta teraz systemową bazę `lamedb`. Naprawia to problem "Zgrano 0 kanałów" u użytkowników, u których nie działało czytanie z bukietów.
-* **📺 Obsługa MAC/Stalker:** Poprawiono wykrywanie strumieni w listach typu JediMaker/XStreamity (referencje `1:0:1` zawierające linki `http` są teraz traktowane jako IPTV).
-* **🔴 Poprawka GUI:** Czerwony przycisk służy teraz do **"Ukrycia w tle"** (minimalizacji). Wtyczka pracuje dalej. Aby zamknąć, użyj przycisku *EXIT*.
-* **🌍 Nowe Źródło:** Dodano `EPG.PW`.
-* **⚡ Stabilność:** Zwiększono limit czasu operacji do 45 minut (dla bardzo dużych plików XML).
+## Previous notes
 
-v1.2 Release Notes:
-- 🌍 ADDED: International EPG Sources (UK, DE, IT, ES, FR, TR, PT, Global)
-- 🚀 NEW: "Fast Mapper" Engine - mapping is now instant (seconds instead of minutes)
-- 🇺🇸 IMPROVED: Professional English translation rewrite
-- 🧠 SMART: Enhanced channel matching (ignores tags like HEVC, VIP, FHD, RAW)
-- 🔧 FIX: Improved SAT->IPTV linking logic & updated default sources
-
-v1.1: Optimized threading (ThreadPoolExecutor), fixed memory leaks in XML parser, added download timeouts, and implemented batch processing for SAT fallback to improve speed and stability.
-
-v1.0 (2025-11-27)
-- Pierwsze oficjalne wydanie (First public release).
-- Obsługa wielu źródeł EPG (EPG Share, Mbebe, OVH, GlobeTV).
-- Inteligentne mapowanie kanałów (Fuzzy Logic + Multi-Match).
-- Obsługa pobierania w tle (Background download).
-- Hybrydowy system pobierania (CURL / WGET / Python).
-- Automatyczne wznawianie importu.
-- Dwujęzyczny interfejs (PL / EN).
+v2.2
+- poprawione mapowanie
+- poprawiony klon SAT
+- przywrócony przycisk aktualizacji
