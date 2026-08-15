@@ -1,14 +1,31 @@
-# v2.2.1 Changelog
+Simple IPTV EPG 3.0.0 build r1
+- FIX: dynamic GUI widgets were hidden behind static eLabel background layers on some Enigma2 skins/images.
+- Added explicit zPosition layering to all plugin screens.
+- Restored visibility of titles, configuration rows, status text, color-key captions, logos and QR codes.
+- Upstream plugin version remains 3.0.0; package/build revision is r1.
 
-- dodane kompletne pliki repozytorium do publikacji na GitHub
-- poprawiony `installer.sh` i opis instalacji
-- poprawiony updater we wtyczce: fallback do instalatora z GitHub
-- zachowana pełna nazwa pakietu: `enigma2-plugin-extensions-simpleiptvepg`
-- źródła przygotowane w strukturze `src/` zgodnej z instalatorem
+Simple IPTV EPG 3.0.0 - 2026-08-15
 
-## Previous notes
-
-v2.2
-- poprawione mapowanie
-- poprawiony klon SAT
-- przywrócony przycisk aktualizacji
+- Full technical audit and architectural rebuild.
+- New adaptive AIO IPTV PL interface inspired by AIO Panel / IPTV Dream / NeoRadio.
+- Added project screen with website QR, author, e-mail and support QR.
+- Added diagnostics, log viewer, source probe, cache cleanup, mapping-only mode and forced remapping.
+- Added background scheduler with configurable 6/12/24/48 h interval and retry guard.
+- Reworked XMLTV downloader: verified TLS, atomic .part downloads, retries, source fallback.
+- Reworked XMLTV validation: complete streaming XML parse, channel/programme validation and gzip integrity through EOF.
+- Reworked bouquet/service scanning and protected Enigma2 C++ calls by main-thread marshaling.
+- Reworked mapping cache: bound to exact effective source URL, bouquet signature and sensitivity.
+- Mapping is now built for all IPTV services; SAT preference is applied only during injection.
+- Added exact tvg-id/epg-id/xmltv-id matching before fuzzy matching.
+- Added ambiguity rejection: uncertain fuzzy matches are deliberately left unmatched.
+- Added XML namespace support.
+- Improved XMLTV timezone parsing and programme parsing.
+- Added genre mapping for imported EPG events.
+- Added conservative SAT -> IPTV EPG cloning with ambiguity rejection.
+- Added eEPGCache save after import where supported.
+- Import no longer reports success when zero events reached eEPGCache.
+- Added persistent state/report/mapping metadata under /etc/enigma2.
+- Added Python 2.7 / Python 3 compatible code paths and removed Python-3-only constructs from core.
+- Reworked updater: removed insecure curl -k / wget --no-check-certificate behavior.
+- Added explicit update confirmation and remote version check.
+- Preserved AUTO_AIO source identifier for compatibility with saved 2.x settings.

@@ -1,24 +1,27 @@
 # -*- coding: utf-8 -*-
+from __future__ import absolute_import, print_function
+
+import calendar
 import datetime
 import difflib
 import gzip
 import hashlib
-import json
 import os
 import re
 import shutil
-import subprocess
 import time
-import urllib.parse
-import urllib.request
-import xml.etree.cElementTree as ET
+import xml.etree.ElementTree as ET
 
-from enigma import eEPGCache, eServiceCenter, eServiceReference
-
-LOG_FILE = "/tmp/simple_epg.log"
-TMP_DIR = "/tmp/simpleiptvepg"
-PACKAGE_NAME = "enigma2-plugin-extensions-simpleiptvepg"
-GITHUB_INSTALLER_URL = "https://raw.githubusercontent.com/OliOli2013/SimpleIPTV_EPG/main/installer.sh"
+from .compat import (
+    Request, command_exists, ensure_dir, io_open, run_command, to_bytes,
+    to_text, unquote, urlopen,
+)
+from .constants import (
+    LOG_FILE, MAPPING_FILE, OVERRIDES_FILE, PACKAGE_NAME, REMOTE_INSTALLER_URL,
+    REMOTE_VERSION_URL, TMP_DIR,
+)
+from .logger import log_message
+from .storage import atomic_write_json, load_json
 
 POLISH_MAP = {
     u"Ą": "A", u"Ć": "C", u"Ę": "E", u"Ł": "L", u"Ń": "N", u"Ó": "O", u"Ś": "S", u"Ź": "Z", u"Ż": "Z",
@@ -27,9 +30,9 @@ POLISH_MAP = {
 
 NOISE_WORDS = set([
     "HD", "FHD", "FULLHD", "UHD", "4K", "HEVC", "H265", "H264", "SD", "PL", "POL", "POLSKA", "TV", "LIVE", "VIP",
-    "BACKUP", "TEST", "RAW", "LEKTOR", "DUB", "SUB", "ORIGINAL", "OTV", "ORG", "MULTI", "KANAŁ", "KANAL",
-    "EU", "EUROPE", "INTERNATIONAL", "INT", "CHANNEL", "VIP", "PLUSX", "OTT", "MPEGTS", "DASH", "HLS",
-    "1080P", "720P", "576P", "50FPS", "60FPS", "X264", "X265", "AAC", "AC3", "EAC3", "DVB",
+    "BACKUP", "TEST", "RAW", "LEKTOR", "DUB", "SUB", "ORIGINAL", "OTV", "ORG", "MULTI", "KANAL", "EU", "EUROPE",
+    "INTERNATIONAL", "INT", "CHANNEL", "OTT", "MPEGTS", "DASH", "HLS", "1080P", "720P", "576P", "50FPS", "60FPS",
+    "X264", "X265", "AAC", "AC3", "EAC3", "DVB", "IPTV", "STREAM", "FEED", "PLUSX",
 ])
 
 MANUAL_ALIASES = {
@@ -37,89 +40,47 @@ MANUAL_ALIASES = {
     "CANALPLUSDOCUMENT": ["CANAL+ DOKUMENT", "CANAL PLUS DOKUMENT"],
     "CANALPLUSFILM": ["CANAL+ FILM", "CANAL PLUS FILM"],
     "CANALPLUSSPORT": ["CANAL+ SPORT", "CANAL PLUS SPORT"],
-    "TVP1": ["TVP 1"],
-    "TVP2": ["TVP 2"],
-    "TVP3": ["TVP 3"],
-    "TVN7": ["TVN 7"],
-    "TVN24": ["TVN 24"],
-    "POLSAT2": ["POLSAT 2"],
-    "POLSATNEWS2": ["POLSAT NEWS 2"],
-    "ELEVENSPORTS1": ["ELEVEN SPORTS 1"],
-    "ELEVENSPORTS2": ["ELEVEN SPORTS 2"],
-    "ELEVENSPORTS3": ["ELEVEN SPORTS 3"],
-    "ELEVENSPORTS4": ["ELEVEN SPORTS 4"],
-    "EUROSPORT1": ["EUROSPORT 1"],
-    "EUROSPORT2": ["EUROSPORT 2"],
+    "TVP1": ["TVP 1"], "TVP2": ["TVP 2"], "TVP3": ["TVP 3"],
+    "TVN7": ["TVN 7"], "TVN24": ["TVN 24"],
+    "POLSAT2": ["POLSAT 2"], "POLSATNEWS2": ["POLSAT NEWS 2"],
+    "ELEVENSPORTS1": ["ELEVEN SPORTS 1"], "ELEVENSPORTS2": ["ELEVEN SPORTS 2"],
+    "ELEVENSPORTS3": ["ELEVEN SPORTS 3"], "ELEVENSPORTS4": ["ELEVEN SPORTS 4"],
+    "EUROSPORT1": ["EUROSPORT 1"], "EUROSPORT2": ["EUROSPORT 2"],
     "HISTORY2": ["HISTORY 2", "H2"],
 }
 
 
-def ensure_temp_dir():
-    try:
-        if not os.path.isdir(TMP_DIR):
-            os.makedirs(TMP_DIR)
-    except Exception:
-        pass
-
-
-def log_message(message):
-    try:
-        with open(LOG_FILE, "a") as handle:
-            handle.write("[%s] %s\n" % (datetime.datetime.now().strftime("%H:%M:%S"), str(message)))
-    except Exception:
-        pass
-
-
-def load_json(path):
-    if not path or not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r") as handle:
-            payload = json.load(handle)
-        return payload if isinstance(payload, dict) else {}
-    except Exception:
-        return {}
-
-
-def atomic_write_json(payload, path):
-    try:
-        directory = os.path.dirname(path) or "/tmp"
-        if not os.path.isdir(directory):
-            os.makedirs(directory)
-        tmp_path = path + ".tmp"
-        with open(tmp_path, "w") as handle:
-            json.dump(payload, handle, indent=2, sort_keys=True)
-        shutil.move(tmp_path, path)
-        return True
-    except Exception as error:
-        log_message("atomic_write_json error: %s" % error)
-        return False
+def local_tag(tag):
+    value = to_text(tag)
+    if "}" in value:
+        value = value.rsplit("}", 1)[-1]
+    if ":" in value:
+        value = value.rsplit(":", 1)[-1]
+    return value.lower()
 
 
 def _replace_polish(value):
-    for src, dst in POLISH_MAP.items():
-        value = value.replace(src, dst)
+    for source, target in POLISH_MAP.items():
+        value = value.replace(source, target)
     return value
 
 
 def simplify_name(text):
     if text is None:
         return ""
-    value = _replace_polish(str(text).upper())
-    value = re.sub(r"\[[^\]]*\]", " ", value)
-    value = re.sub(r"\([^\)]*\)", " ", value)
+    value = _replace_polish(to_text(text).upper())
+    value = value.replace("CANAL+", "CANAL PLUS ").replace("C+", "CANAL PLUS ")
     value = value.replace("&", " AND ").replace("+", " PLUS ")
-    value = value.replace("CANAL+", "CANAL PLUS ")
-    value = value.replace("C+", "CANAL PLUS ")
     value = value.replace("TVP1", "TVP 1 ").replace("TVP2", "TVP 2 ").replace("TVP3", "TVP 3 ")
     value = value.replace("TVN7", "TVN 7 ").replace("TVN24", "TVN 24 ")
+    value = re.sub(r"\[[^\]]*\]", " ", value)
+    value = re.sub(r"\([^\)]*\)", " ", value)
     value = re.sub(r"\bS0([1-9])\b", r"S\1", value)
     value = re.sub(r"\bE0([1-9])\b", r"E\1", value)
-    value = re.sub(r"\.(?:[A-Z0-9]{1,3})\b", " ", value)
+    value = re.sub(r"\.(?:[A-Z0-9]{1,4})\b", " ", value)
     value = re.sub(r"[^A-Z0-9]+", " ", value)
-    raw_tokens = value.split()
     tokens = []
-    for token in raw_tokens:
+    for token in value.split():
         if token in NOISE_WORDS:
             continue
         if len(token) == 1 and not token.isdigit():
@@ -127,8 +88,6 @@ def simplify_name(text):
         if re.match(r"^(?:19|20)\d{2}$", token):
             continue
         tokens.append(token)
-    while tokens and len(tokens[-1]) == 1 and not tokens[-1].isdigit():
-        tokens.pop()
     return " ".join(tokens).strip()
 
 
@@ -148,85 +107,96 @@ def name_variants(text):
         variants.add(base)
         variants.add(compact)
         variants.add(base.replace(" PLUS ", " "))
-        variants.add(base.replace(" PLUS ", "+"))
         variants.add(re.sub(r"\bTVP\s+(\d)\b", r"TVP\1", base))
         variants.add(re.sub(r"\bTVN\s+(\d+)\b", r"TVN\1", base))
         variants.add(base.replace(" TWO ", " 2 "))
         variants.add(base.replace(" ONE ", " 1 "))
-    for key, values in MANUAL_ALIASES.items():
-        if compact == key:
-            for item in values:
-                variants.add(simplify_name(item))
-                variants.add(compact_name(item))
+    if compact in MANUAL_ALIASES:
+        for item in MANUAL_ALIASES[compact]:
+            variants.add(simplify_name(item))
+            variants.add(compact_name(item))
     return [item for item in variants if item]
 
 
 def extract_ref_hints(ref):
     if not ref:
         return []
-    decoded = urllib.parse.unquote(str(ref))
+    decoded = unquote(to_text(ref))
     hints = []
     patterns = [
-        r"tvg-id=([^&:]+)",
-        r"tvg-name=([^&:]+)",
-        r"epg_id=([^&:]+)",
-        r"channel-id=([^&:]+)",
-        r"serviceid=([^&:]+)",
-        r"xmltv=([^&:]+)",
-        r"name=([^&:]+)",
+        r"tvg-name=([^&:]+)", r"name=([^&:]+)", r"channel-name=([^&:]+)",
     ]
     for pattern in patterns:
         for match in re.findall(pattern, decoded, flags=re.IGNORECASE):
             hints.append(match)
-    parts = decoded.split(":")
-    if parts:
-        tail = parts[-1]
-        if tail and "http" not in tail.lower():
-            hints.append(tail)
-    return [item for item in hints if item]
+    return [to_text(item).strip() for item in hints if to_text(item).strip()]
+
+
+def extract_xmltv_id_hints(ref):
+    if not ref:
+        return []
+    decoded = unquote(to_text(ref))
+    hints = []
+    patterns = [
+        r"tvg-id=([^&:]+)", r"epg_id=([^&:]+)", r"epgid=([^&:]+)",
+        r"channel-id=([^&:]+)", r"xmltv=([^&:]+)", r"xmltv_id=([^&:]+)",
+    ]
+    for pattern in patterns:
+        for match in re.findall(pattern, decoded, flags=re.IGNORECASE):
+            value = to_text(match).strip().strip('"\'')
+            if value and value not in hints:
+                hints.append(value)
+    return hints
 
 
 def is_iptv_ref(ref):
-    lower = str(ref or "").lower()
+    lower = to_text(ref).lower()
     return (
         "4097:" in lower or "5001:" in lower or "5002:" in lower or "8193:" in lower
-        or "http" in lower or "https" in lower or "%3a" in lower or "rtmp" in lower or "rtsp" in lower
+        or "http" in lower or "%3a" in lower or "rtmp" in lower or "rtsp" in lower
     )
 
 
 def is_live_iptv(ref, name):
-    lower_ref = str(ref or "").lower()
-    upper_name = str(name or "").upper()
+    lower_ref = to_text(ref).lower()
+    upper_name = to_text(name).upper()
     for marker in ["/movie/", "/series/", "/vod/", "type=movie", "type=series", "catchup", "timeshift"]:
         if marker in lower_ref:
             return False
-    for marker in [" VOD", "SERIALE", "SERIAL", "XXX VOD", "KINO VOD", "FILMY VOD"]:
+    for marker in [" VOD", "SERIALE", "SERIAL", "XXX VOD", "KINO VOD", "FILMY VOD", "MOVIES"]:
         if marker in upper_name:
             return False
     return True
 
 
-def _service_candidates_from_name_and_ref(name, ref):
-    out = []
+def build_service_entry(ref, name):
+    name = to_text(name).strip() or "IPTV"
+    candidates = []
     seen = set()
-    raw = list(extract_ref_hints(ref)) + [name]
-    for item in raw:
-        for variant in name_variants(item):
-            compact = variant.replace(" ", "")
+    for raw in extract_ref_hints(ref) + [name]:
+        for variant in name_variants(raw):
+            compact = compact_name(variant)
             if compact and compact not in seen:
                 seen.add(compact)
-                out.append(compact)
-    return out
-
-
-def build_service_entry(ref, name):
+                candidates.append(compact)
     return {
-        "full_ref": ref,
+        "full_ref": to_text(ref),
         "name": name,
         "norm": compact_name(name),
         "tokens": tokenize(name),
-        "candidates": _service_candidates_from_name_and_ref(name, ref),
+        "candidates": candidates,
+        "id_hints": extract_xmltv_id_hints(ref),
     }
+
+
+def _name_from_service_ref(ref):
+    decoded = unquote(to_text(ref))
+    if "http" in decoded.lower():
+        # Most IPTV refs end in :<stream-url>:<display-name>. Do not treat URL tail as name.
+        parts = decoded.rsplit(":", 1)
+        if len(parts) == 2 and parts[1] and "/" not in parts[1] and "?" not in parts[1]:
+            return parts[1].strip()
+    return ""
 
 
 def _scan_from_files():
@@ -234,316 +204,309 @@ def _scan_from_files():
     sat_services = []
     skipped = 0
     seen = set()
+    base = "/etc/enigma2"
     try:
-        filenames = sorted([name for name in os.listdir("/etc/enigma2/") if name.startswith("userbouquet") and name.endswith(".tv")])
+        filenames = sorted([name for name in os.listdir(base) if name.startswith("userbouquet") and name.endswith(".tv")])
     except Exception:
         filenames = []
-
     for filename in filenames:
-        path = os.path.join("/etc/enigma2/", filename)
-        current = None
+        path = os.path.join(base, filename)
+        current_ref = None
+        current_name = ""
         try:
-            with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+            with io_open(path, "r") as handle:
                 for raw_line in handle:
-                    line = raw_line.strip()
+                    line = to_text(raw_line).strip()
                     if line.startswith("#SERVICE "):
-                        ref = line.replace("#SERVICE ", "", 1).strip()
-                        current = {"ref": ref, "name": ""}
-                    elif line.startswith("#DESCRIPTION") and current is not None:
-                        current["name"] = line.replace("#DESCRIPTION", "", 1).strip()
-                        ref = current.get("ref")
-                        name = current.get("name")
-                        if not ref or ref in seen or "###" in name or "---" in name:
-                            current = None
-                            continue
-                        seen.add(ref)
-                        if is_iptv_ref(ref):
-                            if not is_live_iptv(ref, name):
-                                skipped += 1
+                        if current_ref:
+                            name = current_name or _name_from_service_ref(current_ref)
+                            if current_ref not in seen and name and "###" not in name and "---" not in name:
+                                seen.add(current_ref)
+                                if is_iptv_ref(current_ref):
+                                    if is_live_iptv(current_ref, name):
+                                        iptv.append(build_service_entry(current_ref, name))
+                                    else:
+                                        skipped += 1
+                                elif current_ref.startswith("1:0:"):
+                                    sat_services.append(build_service_entry(current_ref, name))
+                        current_ref = line[len("#SERVICE "):].strip()
+                        current_name = ""
+                    elif line.startswith("#DESCRIPTION") and current_ref:
+                        current_name = line[len("#DESCRIPTION"):].strip()
+                if current_ref:
+                    name = current_name or _name_from_service_ref(current_ref)
+                    if current_ref not in seen and name and "###" not in name and "---" not in name:
+                        if is_iptv_ref(current_ref):
+                            if is_live_iptv(current_ref, name):
+                                iptv.append(build_service_entry(current_ref, name))
                             else:
-                                iptv.append(build_service_entry(ref, name))
-                        elif ref.startswith("1:0:"):
-                            sat_services.append(build_service_entry(ref, name))
-                        current = None
+                                skipped += 1
+                        elif current_ref.startswith("1:0:"):
+                            sat_services.append(build_service_entry(current_ref, name))
         except Exception as error:
-            log_message("scan files error %s: %s" % (path, error))
+            log_message("bouquet file scan error %s: %s" % (path, error))
     return iptv, sat_services, skipped
 
 
 def _scan_from_memory():
+    from enigma import eServiceCenter, eServiceReference
     iptv = []
     sat_services = []
     skipped = 0
-    seen_refs = set()
+    seen = set()
     service_center = eServiceCenter.getInstance()
     root = eServiceReference('1:7:1:0:0:0:0:0:0:0:FROM BOUQUET "bouquets.tv" ORDER BY bouquet')
     bouquets = service_center.list(root)
     if bouquets is None:
-        raise RuntimeError("no bouquets")
-    bouquet_items = bouquets.getContent("SN") or []
-    for bouquet_ref, _bouquet_name in bouquet_items:
+        return iptv, sat_services, skipped
+    for bouquet_ref, _bouquet_name in (bouquets.getContent("SN") or []):
         bouquet_list = service_center.list(eServiceReference(bouquet_ref))
         if bouquet_list is None:
             continue
         for service_ref, service_name in (bouquet_list.getContent("SN") or []):
-            if not service_ref or service_ref in seen_refs:
+            ref = to_text(service_ref)
+            name = to_text(service_name)
+            if not ref or ref in seen or "###" in name or "---" in name:
                 continue
-            if "###" in str(service_name) or "---" in str(service_name):
-                continue
-            seen_refs.add(service_ref)
-            if is_iptv_ref(service_ref):
-                if not is_live_iptv(service_ref, service_name):
+            seen.add(ref)
+            if is_iptv_ref(ref):
+                if is_live_iptv(ref, name):
+                    iptv.append(build_service_entry(ref, name))
+                else:
                     skipped += 1
-                    continue
-                iptv.append(build_service_entry(service_ref, service_name))
-            elif str(service_ref).startswith("1:0:"):
-                sat_services.append(build_service_entry(service_ref, service_name))
+            elif ref.startswith("1:0:"):
+                sat_services.append(build_service_entry(ref, name))
     return iptv, sat_services, skipped
 
 
-def _merge_service_lists(primary, secondary):
+def _merge(primary, secondary):
+    out = []
     seen = set()
-    merged = []
     for bucket in (primary or [], secondary or []):
         for item in bucket:
             ref = item.get("full_ref")
-            if not ref or ref in seen:
-                continue
-            seen.add(ref)
-            merged.append(item)
-    return merged
+            if ref and ref not in seen:
+                seen.add(ref)
+                out.append(item)
+    return out
 
 
-def _build_sat_exact_map(sat_services):
-    sat_map = {}
-    for service in sat_services:
-        for candidate in service.get("candidates", []) or []:
-            sat_map.setdefault(candidate, [])
-            if service.get("full_ref") not in sat_map[candidate]:
-                sat_map[candidate].append(service.get("full_ref"))
-    return sat_map
-
-
-def scan_bouquet_services():
+def scan_bouquet_services(main_call=None):
     file_iptv, file_sat, file_skipped = _scan_from_files()
     mem_iptv, mem_sat, mem_skipped = [], [], 0
     try:
-        mem_iptv, mem_sat, mem_skipped = _scan_from_memory()
+        if main_call:
+            mem_iptv, mem_sat, mem_skipped = main_call(_scan_from_memory, timeout=30)
+        else:
+            mem_iptv, mem_sat, mem_skipped = _scan_from_memory()
     except Exception as error:
-        log_message("scan_bouquet_services memory fallback: %s" % error)
-
-    iptv = _merge_service_lists(mem_iptv, file_iptv)
-    sat_services = _merge_service_lists(mem_sat, file_sat)
-    skipped = int(file_skipped) + int(mem_skipped)
-
-    digest = hashlib.md5()
+        log_message("memory bouquet scan unavailable: %s" % error)
+    iptv = _merge(mem_iptv, file_iptv)
+    sat_services = _merge(mem_sat, file_sat)
+    digest = hashlib.sha256()
     for item in sorted(iptv, key=lambda entry: entry.get("full_ref", "")):
-        digest.update((item.get("full_ref", "") + "|" + item.get("norm", "") + "\n").encode("utf-8", "ignore"))
-
-    sat_digest = hashlib.md5()
+        digest.update(to_bytes(item.get("full_ref", "") + "|" + item.get("norm", "") + "\n"))
+    sat_digest = hashlib.sha256()
     for item in sorted(sat_services, key=lambda entry: entry.get("full_ref", "")):
-        sat_digest.update((item.get("full_ref", "") + "|" + item.get("norm", "") + "\n").encode("utf-8", "ignore"))
-
+        sat_digest.update(to_bytes(item.get("full_ref", "") + "|" + item.get("norm", "") + "\n"))
     return {
         "iptv": iptv,
         "sat_services": sat_services,
-        "sat_map": _build_sat_exact_map(sat_services),
-        "skipped": skipped,
+        "skipped": int(file_skipped) + int(mem_skipped),
         "services_signature": digest.hexdigest() + ":" + sat_digest.hexdigest(),
     }
 
 
-def _download_via_command(command, timeout):
+def source_fingerprint(url):
+    return hashlib.sha256(to_bytes(url or "")).hexdigest()[:24]
+
+
+def _download_with_urllib(url, target_path, timeout):
+    request = Request(url, headers={"User-Agent": "SimpleIPTVEPG/3.0"})
+    response = urlopen(request, timeout=timeout)
     try:
-        result = subprocess.run(command, capture_output=True, timeout=timeout + 10)
-        return result.returncode == 0
-    except Exception:
-        return False
-
-
-def _download_via_urllib(url, target_path, timeout):
-    request = urllib.request.Request(url, headers={"User-Agent": "SimpleIPTVEPG/2.1"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
         with open(target_path, "wb") as handle:
             while True:
-                chunk = response.read(1024 * 128)
+                chunk = response.read(128 * 1024)
                 if not chunk:
                     break
                 handle.write(chunk)
+    finally:
+        try:
+            response.close()
+        except Exception:
+            pass
     return True
 
 
-def download_file(url, target_path, timeout=120, retries=2, log_cb=None):
-    ensure_temp_dir()
-    for attempt in range(retries):
+def download_file(url, target_path, timeout=180, retries=2, log_cb=None):
+    ensure_dir(TMP_DIR)
+    partial = target_path + ".part"
+    for attempt in range(max(int(retries), 1)):
         try:
-            if os.path.exists(target_path):
-                os.remove(target_path)
+            if os.path.exists(partial):
+                os.remove(partial)
         except Exception:
             pass
+        ok = False
         try:
-            ok = False
-            if shutil.which("curl"):
-                ok = _download_via_command(["curl", "-f", "-L", "-k", "--connect-timeout", "20", "--max-time", str(timeout), "-A", "SimpleIPTVEPG/2.1", "-o", target_path, url], timeout)
-            if not ok and shutil.which("wget"):
-                ok = _download_via_command(["wget", "-q", "-O", target_path, "--timeout=%s" % timeout, url], timeout)
+            curl = command_exists("curl")
+            wget = command_exists("wget")
+            if curl:
+                code, output = run_command([
+                    curl, "-fL", "--connect-timeout", "20", "--max-time", str(timeout),
+                    "-A", "SimpleIPTVEPG/3.0", "-o", partial, url,
+                ], timeout=timeout + 15)
+                ok = code == 0
+                if not ok:
+                    log_message("curl download failed: %s" % output[-500:])
+            if not ok and wget:
+                code, output = run_command([
+                    wget, "-q", "--timeout=%s" % timeout, "-O", partial, url,
+                ], timeout=timeout + 15)
+                ok = code == 0
+                if not ok:
+                    log_message("wget download failed: %s" % output[-500:])
             if not ok:
-                ok = _download_via_urllib(url, target_path, timeout)
-            if ok and os.path.exists(target_path) and os.path.getsize(target_path) > 256:
+                ok = _download_with_urllib(url, partial, timeout)
+            if ok and os.path.exists(partial) and os.path.getsize(partial) > 256:
+                try:
+                    if os.path.exists(target_path):
+                        os.remove(target_path)
+                except Exception:
+                    pass
+                shutil.move(partial, target_path)
                 return True
         except Exception as error:
-            log_message("download_file error (%s): %s" % (url, error))
+            log_message("download error %s: %s" % (url, error))
             if log_cb:
-                log_cb("Download error: %s" % error)
-        time.sleep(1)
+                log_cb("Błąd pobierania: %s" % error)
+        if attempt + 1 < max(int(retries), 1):
+            time.sleep(1.5)
+    try:
+        if os.path.exists(partial):
+            os.remove(partial)
+    except Exception:
+        pass
     return False
 
 
-
-
-
-def update_plugin_package(log_cb=None):
-    commands = []
-    local_candidates = [
-        "/tmp/simpleiptvepg_latest.ipk",
-        "/tmp/simpleiptvepg_update.ipk",
-        "/tmp/%s.ipk" % PACKAGE_NAME,
-        "/media/hdd/simpleiptvepg_latest.ipk",
-    ]
-    for candidate in local_candidates:
-        if os.path.exists(candidate):
-            commands.append(["opkg", "install", "--force-reinstall", "--force-overwrite", candidate])
-    commands.extend([
-        ["opkg", "update"],
-        ["opkg", "install", "--force-reinstall", "--force-overwrite", PACKAGE_NAME],
-        ["opkg", "upgrade", PACKAGE_NAME],
-    ])
-    for command in commands:
-        try:
-            result = subprocess.run(command, capture_output=True, timeout=600, text=True)
-            output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
-            if log_cb:
-                log_cb("$ %s" % " ".join(command))
-                if output:
-                    log_cb(output[-600:])
-            if result.returncode == 0:
-                return True, output or "OK"
-        except Exception as error:
-            if log_cb:
-                log_cb("Update error: %s" % error)
-            log_message("update_plugin_package error: %s" % error)
-
-    installer_path = os.path.join(TMP_DIR, "installer.sh")
-    os.makedirs(TMP_DIR, exist_ok=True)
-    download_commands = [
-        ["wget", "--no-check-certificate", "-O", installer_path, GITHUB_INSTALLER_URL],
-        ["curl", "-k", "-L", "-o", installer_path, GITHUB_INSTALLER_URL],
-    ]
-    for command in download_commands:
-        try:
-            result = subprocess.run(command, capture_output=True, timeout=180, text=True)
-            output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
-            if log_cb:
-                log_cb("$ %s" % " ".join(command))
-                if output:
-                    log_cb(output[-600:])
-            if result.returncode == 0 and os.path.exists(installer_path):
-                break
-        except Exception as error:
-            if log_cb:
-                log_cb("Installer download error: %s" % error)
-    if os.path.exists(installer_path):
-        try:
-            os.chmod(installer_path, 0o755)
-            result = subprocess.run(["/bin/sh", installer_path], capture_output=True, timeout=1800, text=True)
-            output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
-            if log_cb:
-                log_cb("$ /bin/sh %s" % installer_path)
-                if output:
-                    log_cb(output[-1200:])
-            if result.returncode == 0:
-                return True, output or "OK"
-            return False, output or "Installer failed"
-        except Exception as error:
-            if log_cb:
-                log_cb("Installer execution error: %s" % error)
-            log_message("update_plugin_package installer error: %s" % error)
-            return False, str(error)
-
-    return False, "Brak pakietu w feedzie, lokalnego IPK ani instalatora GitHub."
-
-
 def validate_xmltv_file(path):
-
-    if not path or not os.path.exists(path):
-        return False
-    opener = gzip.open if str(path).lower().endswith(".gz") else open
+    """Stream-validate the complete XMLTV document without loading it into RAM."""
+    if not path or not os.path.exists(path) or os.path.getsize(path) < 256:
+        return False, "empty"
+    opener = gzip.open if to_text(path).lower().endswith(".gz") else open
+    channels = 0
+    programmes = 0
+    root_seen = False
     try:
         with opener(path, "rb") as handle:
-            chunk = handle.read(4096)
-        head = chunk.decode("utf-8", "ignore").lower()
-        return "<tv" in head or "<?xml" in head
+            context = ET.iterparse(handle, events=("start", "end"))
+            for event, elem in context:
+                tag = local_tag(elem.tag)
+                if event == "start" and not root_seen:
+                    root_seen = True
+                    if tag != "tv":
+                        return False, "root:%s" % tag
+                elif event == "end":
+                    if tag == "channel":
+                        channels += 1
+                    elif tag == "programme":
+                        programmes += 1
+                    elem.clear()
+        if not root_seen:
+            return False, "no-root"
+        if channels < 1:
+            return False, "no-channels"
+        if programmes < 1:
+            return False, "no-programmes"
+        return True, "xmltv channels=%s programmes=%s" % (channels, programmes)
     except Exception as error:
-        log_message("validate_xmltv_file error: %s" % error)
-        return False
+        log_message("XMLTV validation error: %s" % error)
+        return False, to_text(error)
 
 
-def _append_unique_event(target, event_tuple, signatures):
-    start, duration, title, desc = event_tuple
-    signature = (int(start), int(duration), str(title or "")[:240], str(desc or "")[:1024])
-    if signature in signatures:
+def probe_url(url, timeout=25):
+    """Small network health probe. Does not download the whole EPG."""
+    started = time.time()
+    try:
+        request = Request(url, headers={"User-Agent": "SimpleIPTVEPG/3.0", "Range": "bytes=0-65535"})
+        response = urlopen(request, timeout=timeout)
+        try:
+            chunk = response.read(65536) or b""
+            code = getattr(response, "code", 200) or 200
+            content_type = ""
+            try:
+                content_type = response.headers.get("Content-Type", "") or ""
+            except Exception:
+                pass
+        finally:
+            try:
+                response.close()
+            except Exception:
+                pass
+        elapsed = int((time.time() - started) * 1000)
+        if int(code) >= 400 or len(chunk) < 16:
+            return False, "HTTP %s" % code, elapsed
+        if to_text(url).lower().endswith(".gz") and not chunk.startswith(b"\x1f\x8b"):
+            return False, "brak nagłówka GZIP", elapsed
+        return True, "HTTP %s %s" % (code, content_type), elapsed
+    except Exception as error:
+        return False, to_text(error), int((time.time() - started) * 1000)
+
+
+def _append_unique_event(target, payload, seen):
+    signature = tuple(payload[:4])
+    if signature in seen:
         return
-    signatures.add(signature)
-    target.append(signature)
+    seen.add(signature)
+    target.append(payload)
 
 
-def get_sat_epg_events(sat_ref, start_ts, end_ts):
+def _get_sat_epg_events_main(sat_ref, start_ts, end_ts):
+    from enigma import eEPGCache, eServiceReference
     out = []
     seen = set()
+    cache = eEPGCache.getInstance()
+    if cache is None:
+        return out
+    ref = eServiceReference(to_text(sat_ref))
     try:
-        cache = eEPGCache.getInstance()
-        ref = eServiceReference(str(sat_ref))
-        if cache and ref and ref.valid():
-            try:
-                if cache.startTimeQuery(ref, int(start_ts)) == 0:
-                    safety = 0
-                    while safety < 4096:
-                        safety += 1
-                        event = cache.getNextTimeEntry()
-                        if event is None:
-                            break
-                        start = int(event.getBeginTime() or 0)
-                        duration = int(event.getDuration() or 0)
-                        if start <= 0 or duration <= 0:
-                            continue
-                        if start > int(end_ts):
-                            break
-                        title = event.getEventName() or ""
-                        desc = event.getShortDescription() or ""
-                        try:
-                            ext = event.getExtendedDescription() or ""
-                            if ext and ext not in desc:
-                                desc = (desc + " " + ext).strip() if desc else ext
-                        except Exception:
-                            pass
-                        _append_unique_event(out, (start, duration, title, desc), seen)
-            except Exception as error:
-                log_message("get_sat_epg_events startTimeQuery error: %s" % error)
-
-            if not out:
+        if cache.startTimeQuery(ref, int(start_ts)) == 0:
+            safety = 0
+            while safety < 4096:
+                safety += 1
+                event = cache.getNextTimeEntry()
+                if event is None:
+                    break
+                start = int(event.getBeginTime() or 0)
+                duration = int(event.getDuration() or 0)
+                if start <= 0 or duration <= 0:
+                    continue
+                if start > int(end_ts):
+                    break
+                title = to_text(event.getEventName() or "")
+                desc = to_text(event.getShortDescription() or "")
                 try:
-                    events = cache.lookupEvent(["IBDCT", (str(sat_ref), 0, int(start_ts), int(end_ts))]) or []
-                    for item in events:
-                        start = int(item[1]) if len(item) > 1 else 0
-                        duration = int(item[2]) if len(item) > 2 else 0
-                        title = item[4] if len(item) > 4 else ""
-                        desc = item[5] if len(item) > 5 else ""
-                        if start > 0 and duration > 0 and start <= int(end_ts):
-                            _append_unique_event(out, (start, duration, title, desc), seen)
-                except Exception as error:
-                    log_message("get_sat_epg_events lookupEvent error: %s" % error)
+                    extended = to_text(event.getExtendedDescription() or "")
+                    if extended and extended not in desc:
+                        desc = (desc + " " + extended).strip()
+                except Exception:
+                    pass
+                _append_unique_event(out, (start, duration, title[:240], desc[:2048], 0), seen)
     except Exception as error:
-        log_message("get_sat_epg_events fatal: %s" % error)
+        log_message("SAT startTimeQuery error: %s" % error)
+        try:
+            events = cache.lookupEvent(["IBDCT", (to_text(sat_ref), 0, int(start_ts), int(end_ts))]) or []
+            for item in events:
+                start = int(item[1]) if len(item) > 1 else 0
+                duration = int(item[2]) if len(item) > 2 else 0
+                title = to_text(item[4] if len(item) > 4 else "")
+                desc = to_text(item[5] if len(item) > 5 else "")
+                if start > 0 and duration > 0 and start <= int(end_ts):
+                    _append_unique_event(out, (start, duration, title[:240], desc[:2048], 0), seen)
+        except Exception as second:
+            log_message("SAT lookupEvent error: %s" % second)
     return out
 
 
@@ -551,52 +514,43 @@ def _build_sat_index(sat_services):
     exact_index = {}
     token_index = {}
     entries = {}
-    for service in sat_services:
+    for service in sat_services or []:
         ref = service.get("full_ref")
         if not ref:
             continue
-        candidates = set(service.get("candidates", []) or [])
+        candidates = set(service.get("candidates") or [])
         for variant in name_variants(service.get("name", "")):
-            compact = variant.replace(" ", "")
+            compact = compact_name(variant)
             if compact:
                 candidates.add(compact)
-                exact_index.setdefault(compact, []).append(ref)
-        tokens = set(service.get("tokens", []) or tokenize(service.get("name", "")))
+        for candidate in candidates:
+            exact_index.setdefault(candidate, []).append(ref)
+        tokens = set(service.get("tokens") or tokenize(service.get("name", "")))
         for token in tokens:
             token_index.setdefault(token, set()).add(ref)
-        entries[ref] = {
-            "ref": ref,
-            "name": service.get("name", ""),
-            "candidates": candidates,
-            "tokens": tokens,
-            "norm": service.get("norm", ""),
-        }
+        entries[ref] = {"ref": ref, "name": service.get("name", ""), "candidates": candidates, "tokens": tokens, "norm": service.get("norm", "")}
     return exact_index, token_index, entries
 
 
 def _score_sat_candidate(iptv_service, sat_entry):
-    best = 0.0
-    iptv_candidates = set(iptv_service.get("candidates", []) or [])
-    sat_candidates = set(sat_entry.get("candidates", []) or [])
-    iptv_tokens = set(iptv_service.get("tokens", []) or [])
-    sat_tokens = set(sat_entry.get("tokens", []) or [])
-    overlap = len(iptv_tokens & sat_tokens)
-    if overlap:
-        best = max(best, 0.46 + 0.11 * min(overlap, 4))
+    left_candidates = set(iptv_service.get("candidates") or [])
+    right_candidates = set(sat_entry.get("candidates") or [])
     if iptv_service.get("norm") and iptv_service.get("norm") == sat_entry.get("norm"):
         return 1.0
-    for left in list(iptv_candidates)[:8]:
-        for right in list(sat_candidates)[:8]:
+    best = 0.0
+    for left in list(left_candidates)[:10]:
+        for right in list(right_candidates)[:10]:
             if left == right:
                 return 1.0
             if left.startswith(right) or right.startswith(left):
-                best = max(best, 0.95)
+                best = max(best, 0.96)
             elif left in right or right in left:
-                best = max(best, 0.91)
+                best = max(best, 0.92)
             else:
-                ratio = difflib.SequenceMatcher(None, left, right).ratio()
-                if ratio > best:
-                    best = ratio
+                best = max(best, difflib.SequenceMatcher(None, left, right).ratio())
+    overlap = len(set(iptv_service.get("tokens") or []) & set(sat_entry.get("tokens") or []))
+    if overlap:
+        best = max(best, 0.54 + 0.12 * min(overlap, 3))
     return best
 
 
@@ -604,77 +558,168 @@ def _candidate_sat_refs(iptv_service, sat_index):
     exact_index, token_index, entries = sat_index
     result = []
     seen = set()
-    for candidate in iptv_service.get("candidates", []) or []:
+    for candidate in iptv_service.get("candidates") or []:
         for ref in exact_index.get(candidate, []) or []:
             if ref not in seen:
                 result.append((1.0, ref))
                 seen.add(ref)
     if result:
-        return result[:4]
-
+        return result[:3]
     pool = set()
-    for token in sorted(list(set(iptv_service.get("tokens", []) or [])), key=lambda item: (-len(item), item))[:5]:
+    for token in sorted(list(set(iptv_service.get("tokens") or [])), key=lambda item: (-len(item), item))[:5]:
         pool.update(token_index.get(token, set()))
-        if len(pool) >= 96:
+        if len(pool) >= 80:
             break
-    if not pool:
-        prefix = (iptv_service.get("norm") or "")[:2]
-        if prefix:
-            for ref, entry in entries.items():
-                if (entry.get("norm") or "").startswith(prefix):
-                    pool.add(ref)
-                    if len(pool) >= 96:
-                        break
     scored = []
     for ref in pool:
         entry = entries.get(ref)
-        if not entry:
+        if entry:
+            score = _score_sat_candidate(iptv_service, entry)
+            if score >= 0.90:
+                scored.append((score, ref))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    # Reject ambiguous SAT fuzzy matches.
+    if len(scored) > 1 and scored[0][0] < 0.985 and (scored[0][0] - scored[1][0]) < 0.03:
+        return []
+    return scored[:3]
+
+
+def _import_events_main(payload_by_ref):
+    from enigma import eEPGCache, eServiceReference
+    cache = eEPGCache.getInstance()
+    if cache is None:
+        return {"services": 0, "events": 0, "errors": 1}
+    service_count = 0
+    event_count = 0
+    errors = 0
+    for service_ref, items in payload_by_ref.items():
+        cleaned = []
+        seen = set()
+        for event in sorted(items, key=lambda entry: (entry[0], entry[1], entry[2])):
+            start, duration, title, desc, genre = event
+            signature = (int(start), int(duration), to_text(title), to_text(desc))
+            if signature in seen:
+                continue
+            seen.add(signature)
+            cleaned.append((int(start), int(duration), to_text(title)[:240], "", to_text(desc)[:2048], int(genre or 0)))
+        if not cleaned:
             continue
-        score = _score_sat_candidate(iptv_service, entry)
-        if score >= 0.76:
-            scored.append((score, ref))
-    scored.sort(reverse=True)
-    return scored[:4]
+        try:
+            cache.importEvents(to_text(service_ref), tuple(cleaned))
+            service_count += 1
+            event_count += len(cleaned)
+        except Exception:
+            try:
+                cache.importEvents(eServiceReference(to_text(service_ref)), tuple(cleaned))
+                service_count += 1
+                event_count += len(cleaned)
+            except Exception as error:
+                errors += 1
+                log_message("importEvents failed %s: %s" % (service_ref, error))
+    return {"services": service_count, "events": event_count, "errors": errors}
 
 
-def clone_sat_to_iptv(injector, iptv_services, sat_services, days_ahead=3, log_cb=None):
-    injected_refs = set()
-    sat_events_cache = {}
-    cloned_channels = 0
-    matched_candidates = 0
+def save_epg_cache_main():
+    try:
+        from enigma import eEPGCache
+        cache = eEPGCache.getInstance()
+        if cache is not None and hasattr(cache, "save"):
+            cache.save()
+            return True
+    except Exception as error:
+        log_message("EPG cache save failed: %s" % error)
+    return False
+
+
+class SafeEPGInjector(object):
+    def __init__(self, main_call):
+        self.main_call = main_call
+        self.events_buffer = {}
+        self.total_events = 0
+        self.total_services = set()
+        self.errors = 0
+
+    def add_event(self, service_ref, event_data):
+        start, duration, title, desc, genre = event_data
+        if int(start) <= 0 or int(duration) <= 0:
+            return
+        key = to_text(service_ref)
+        self.events_buffer.setdefault(key, []).append((int(start), int(duration), to_text(title), to_text(desc), int(genre or 0)))
+
+    def commit(self):
+        if not self.events_buffer:
+            return {"services": 0, "events": 0, "errors": 0}
+        payload = self.events_buffer
+        self.events_buffer = {}
+        try:
+            result = self.main_call(_import_events_main, payload, timeout=120)
+        except Exception as error:
+            log_message("main-thread EPG injection failed: %s" % error)
+            result = {"services": 0, "events": 0, "errors": 1}
+        self.total_events += int(result.get("events", 0))
+        self.errors += int(result.get("errors", 0))
+        for ref in payload.keys():
+            self.total_services.add(ref)
+        return result
+
+
+def clone_sat_to_iptv(injector, iptv_services, sat_services, days_ahead=3, main_call=None, log_cb=None):
+    if not main_call:
+        return {"injected_refs": set(), "channels": 0, "events": 0}
     now_ts = int(time.time()) - 3600
     end_ts = int(time.time()) + max(int(days_ahead), 1) * 86400
-    sat_index = _build_sat_index(sat_services or [])
-
-    for index, service in enumerate(iptv_services):
+    sat_index = _build_sat_index(sat_services)
+    sat_events_cache = {}
+    injected_refs = set()
+    channels = 0
+    events_count = 0
+    for index, service in enumerate(iptv_services or []):
         candidates = _candidate_sat_refs(service, sat_index)
-        if not candidates:
-            continue
         chosen_events = []
         for score, sat_ref in candidates:
             if sat_ref not in sat_events_cache:
-                sat_events_cache[sat_ref] = get_sat_epg_events(sat_ref, now_ts, end_ts)
-            events = sat_events_cache.get(sat_ref, [])
-            if events:
-                matched_candidates += 1
-                chosen_events = events
-                if log_cb and score >= 0.98 and ((index + 1) % 300 == 0):
-                    log_cb("SAT exact: %s -> %s" % (service.get("name", ""), sat_ref))
+                try:
+                    sat_events_cache[sat_ref] = main_call(_get_sat_epg_events_main, sat_ref, now_ts, end_ts, timeout=30)
+                except Exception as error:
+                    log_message("SAT query failed: %s" % error)
+                    sat_events_cache[sat_ref] = []
+            if sat_events_cache.get(sat_ref):
+                chosen_events = sat_events_cache[sat_ref]
                 break
-        if not chosen_events:
-            continue
-        for payload in chosen_events:
-            injector.add_event(service.get("full_ref"), payload)
-        injected_refs.add(service.get("full_ref"))
-        cloned_channels += 1
-        if (index + 1) % 200 == 0:
+        if chosen_events:
+            ref = service.get("full_ref")
+            for payload in chosen_events:
+                injector.add_event(ref, payload)
+                events_count += 1
+            injected_refs.add(ref)
+            channels += 1
+        if (index + 1) % 100 == 0:
             injector.commit()
             if log_cb:
-                log_cb("SAT: %s/%s | sklonowano: %s" % (index + 1, len(iptv_services), cloned_channels))
+                log_cb("SAT → IPTV: %s/%s | kanałów: %s" % (index + 1, len(iptv_services or []), channels))
     injector.commit()
-    if log_cb:
-        log_cb("SAT match: sklonowane=%s z %s IPTV | SAT refs=%s" % (cloned_channels, len(iptv_services), len(sat_services or [])))
-    return {"injected_refs": injected_refs, "channels": cloned_channels, "candidate_hits": matched_candidates}
+    return {"injected_refs": injected_refs, "channels": channels, "events": events_count}
+
+
+def genre_code(categories):
+    text = " ".join([to_text(item).lower() for item in (categories or [])])
+    rules = [
+        (("movie", "film", "cinema", "drama", "serial"), 0x10),
+        (("news", "wiadomo", "inform", "current affairs"), 0x20),
+        (("show", "game show", "variety", "reality"), 0x30),
+        (("sport", "football", "soccer", "tennis", "boxing"), 0x40),
+        (("children", "kids", "dzieci", "cartoon", "animation"), 0x50),
+        (("music", "muzyk", "concert"), 0x60),
+        (("arts", "culture", "kultur", "performing"), 0x70),
+        (("social", "politic", "econom", "relig"), 0x80),
+        (("education", "science", "documentary", "dokument", "nature"), 0x90),
+        (("leisure", "travel", "cooking", "cook", "hobby"), 0xA0),
+    ]
+    for needles, code in rules:
+        for needle in needles:
+            if needle in text:
+                return code
+    return 0
 
 
 class EPGParser(object):
@@ -682,103 +727,181 @@ class EPGParser(object):
         self.source_path = source_path
 
     def parse_timestamp(self, xmltv_date):
-        if not xmltv_date:
+        value = to_text(xmltv_date).strip()
+        if not value:
             return 0
-        value = str(xmltv_date).strip()
-        match = re.match(r"^(\d{14})(?:\s*([+-]\d{4}|Z))?", value)
+        match = re.match(r"^(\d{8,14})(?:\s*([+-]\d{2}:?\d{2}|Z))?", value)
         if not match:
             return 0
         stamp, offset = match.groups()
+        formats = {8: "%Y%m%d", 10: "%Y%m%d%H", 12: "%Y%m%d%H%M", 14: "%Y%m%d%H%M%S"}
+        fmt = formats.get(len(stamp))
+        if not fmt:
+            return 0
         try:
-            dt = datetime.datetime.strptime(stamp, "%Y%m%d%H%M%S")
-            if offset and offset != "Z":
-                sign = 1 if offset.startswith("+") else -1
-                hours = int(offset[1:3])
-                minutes = int(offset[3:5])
-                delta = datetime.timedelta(hours=hours, minutes=minutes)
-                tz = datetime.timezone(sign * delta)
-                dt = dt.replace(tzinfo=tz)
-                return int(dt.timestamp())
+            dt = datetime.datetime.strptime(stamp, fmt)
             if offset == "Z":
-                dt = dt.replace(tzinfo=datetime.timezone.utc)
-                return int(dt.timestamp())
+                return int(calendar.timegm(dt.timetuple()))
+            if offset:
+                clean = offset.replace(":", "")
+                sign = 1 if clean.startswith("+") else -1
+                hours = int(clean[1:3])
+                minutes = int(clean[3:5])
+                seconds = sign * ((hours * 60 + minutes) * 60)
+                return int(calendar.timegm(dt.timetuple()) - seconds)
             return int(time.mktime(dt.timetuple()))
         except Exception:
             return 0
 
     def iter_events(self, mapping, days_ahead=3, progress_cb=None):
-        if not self.source_path or not os.path.exists(self.source_path):
+        if not mapping or not self.source_path or not os.path.exists(self.source_path):
             return
-        opener = gzip.open if str(self.source_path).lower().endswith(".gz") else open
-        if not mapping:
-            return
+        opener = gzip.open if to_text(self.source_path).lower().endswith(".gz") else open
         now_ts = int(time.time()) - 6 * 3600
         max_ts = int(time.time()) + max(int(days_ahead), 1) * 86400
         processed = 0
         matched = 0
+        with opener(self.source_path, "rb") as handle:
+            context = ET.iterparse(handle, events=("end",))
+            for _event, elem in context:
+                if local_tag(elem.tag) != "programme":
+                    continue
+                processed += 1
+                channel_id = to_text(elem.get("channel") or "")
+                refs = mapping.get(channel_id)
+                if refs:
+                    start = self.parse_timestamp(elem.get("start"))
+                    stop = self.parse_timestamp(elem.get("stop"))
+                    if start > 0 and stop > start and start <= max_ts and stop >= now_ts:
+                        title = ""
+                        subtitle = ""
+                        short_desc = ""
+                        long_desc = ""
+                        categories = []
+                        for child in list(elem):
+                            tag = local_tag(child.tag)
+                            text = to_text(child.text or "").strip()
+                            if tag == "title" and not title:
+                                title = text
+                            elif tag in ("sub-title", "subtitle") and not subtitle:
+                                subtitle = text
+                            elif tag == "desc":
+                                if not short_desc:
+                                    short_desc = text
+                                elif len(text) > len(long_desc):
+                                    long_desc = text
+                            elif tag == "category" and text:
+                                categories.append(text)
+                        desc = long_desc or short_desc
+                        if subtitle and subtitle.lower() not in desc.lower():
+                            desc = (subtitle + "\n" + desc).strip()
+                        payload = (int(start), int(stop - start), title[:240], desc[:2048], genre_code(categories))
+                        for ref in refs:
+                            matched += 1
+                            yield ref, payload, channel_id
+                elem.clear()
+                if progress_cb and processed % 50000 == 0:
+                    progress_cb("XMLTV: %s programów | dopasowań: %s" % (processed, matched))
+
+
+def load_overrides():
+    payload = load_json(OVERRIDES_FILE, {})
+    return payload if isinstance(payload, dict) else {}
+
+
+def read_remote_version(timeout=20):
+    try:
+        request = Request(REMOTE_VERSION_URL, headers={"User-Agent": "SimpleIPTVEPG/3.0"})
+        response = urlopen(request, timeout=timeout)
         try:
-            with opener(self.source_path, "rb") as handle:
-                context = ET.iterparse(handle, events=("end",))
-                for _event, elem in context:
-                    if elem.tag != "programme":
-                        if elem.tag == "tv":
-                            elem.clear()
-                        continue
-                    processed += 1
-                    channel_id = elem.get("channel") or ""
-                    refs = mapping.get(channel_id)
-                    if refs:
-                        start = self.parse_timestamp(elem.get("start"))
-                        stop = self.parse_timestamp(elem.get("stop"))
-                        if start > 0 and stop > start and start <= max_ts and stop >= now_ts:
-                            duration = stop - start
-                            title = ""
-                            desc = ""
-                            for child in elem:
-                                if child.tag == "title" and not title:
-                                    title = child.text or ""
-                                elif child.tag == "desc" and not desc:
-                                    desc = child.text or ""
-                            payload = (int(start), int(duration), str(title or "")[:240], str(desc or "")[:1024])
-                            for service_ref in refs:
-                                matched += 1
-                                yield service_ref, payload, channel_id
-                    elem.clear()
-                    if progress_cb and processed % 50000 == 0:
-                        progress_cb("XML: %s programów | trafień: %s" % (processed, matched))
-        except Exception as error:
-            log_message("EPGParser.iter_events error: %s" % error)
-            if progress_cb:
-                progress_cb("XML parse error: %s" % error)
-
-
-class EPGInjector(object):
-    def __init__(self):
-        self.epg_cache = eEPGCache.getInstance()
-        self.events_buffer = {}
-
-    def add_event(self, service_ref, event_data):
-        start, duration, title, desc = event_data
-        if start <= 0 or duration <= 0:
-            return
-        key = str(service_ref)
-        self.events_buffer.setdefault(key, []).append((int(start), int(duration), str(title or "")[:240], "", str(desc or "")[:1024], 0))
-
-    def commit(self):
-        if not self.events_buffer:
-            return
-        for service_ref, items in list(self.events_buffer.items()):
+            data = to_text(response.read(128)).strip()
+        finally:
             try:
-                cleaned = []
-                seen = set()
-                for event in sorted(items, key=lambda entry: (entry[0], entry[1], entry[2])):
-                    signature = (event[0], event[1], event[2], event[4])
-                    if signature in seen:
-                        continue
-                    seen.add(signature)
-                    cleaned.append(event)
-                if cleaned:
-                    self.epg_cache.importEvents(str(service_ref), cleaned)
-            except Exception as error:
-                log_message("EPGInjector.commit error for %s: %s" % (service_ref, error))
-        self.events_buffer = {}
+                response.close()
+            except Exception:
+                pass
+        if re.match(r"^\d+(?:\.\d+){1,3}$", data):
+            return data
+    except Exception as error:
+        log_message("remote version check failed: %s" % error)
+    return ""
+
+
+def _version_tuple(value):
+    out = []
+    for part in to_text(value).split("."):
+        try:
+            out.append(int(part))
+        except Exception:
+            out.append(0)
+    return tuple(out)
+
+
+def is_newer_version(remote, local):
+    return _version_tuple(remote) > _version_tuple(local)
+
+
+def safe_update_plugin(log_cb=None):
+    """Explicit updater. TLS verification is never disabled."""
+    commands = []
+    local_candidates = [
+        "/tmp/simpleiptvepg_latest.ipk", "/tmp/simpleiptvepg_update.ipk",
+        "/tmp/%s.ipk" % PACKAGE_NAME, "/media/hdd/simpleiptvepg_latest.ipk",
+    ]
+    opkg = command_exists("opkg")
+    if opkg:
+        for candidate in local_candidates:
+            if os.path.exists(candidate):
+                commands.append([opkg, "install", "--force-reinstall", "--force-overwrite", candidate])
+        commands.extend([
+            [opkg, "install", "--force-reinstall", "--force-overwrite", PACKAGE_NAME],
+            [opkg, "upgrade", PACKAGE_NAME],
+        ])
+    for command in commands:
+        code, output = run_command(command, timeout=600)
+        if log_cb:
+            log_cb("$ %s" % " ".join(command))
+            if output:
+                log_cb(output[-800:])
+        if code == 0:
+            return True, output or "OK"
+
+    ensure_dir(TMP_DIR)
+    installer = os.path.join(TMP_DIR, "installer.sh")
+    try:
+        if os.path.exists(installer):
+            os.remove(installer)
+    except Exception:
+        pass
+    if not download_file(REMOTE_INSTALLER_URL, installer, timeout=60, retries=1, log_cb=log_cb):
+        return False, "Nie udało się pobrać instalatora z oficjalnego repozytorium."
+    try:
+        size = os.path.getsize(installer)
+        with io_open(installer, "r") as handle:
+            head = handle.read(min(size, 240000))
+        lowered = head.lower()
+        if size < 40 or size > 250000 or "simpleiptv_epg" not in lowered or "olioli2013" not in lowered:
+            try:
+                os.remove(installer)
+            except Exception:
+                pass
+            return False, "Pobrany instalator nie przeszedł walidacji bezpieczeństwa."
+        digest = hashlib.sha256(to_bytes(head)).hexdigest()
+        if log_cb:
+            log_cb("Installer SHA-256: %s" % digest)
+        shell = command_exists("sh") or "/bin/sh"
+        code, output = run_command([shell, installer], timeout=1800)
+        try:
+            os.remove(installer)
+        except Exception:
+            pass
+        if log_cb and output:
+            log_cb(output[-1500:])
+        return (code == 0), (output or ("OK" if code == 0 else "Installer failed"))
+    except Exception as error:
+        try:
+            if os.path.exists(installer):
+                os.remove(installer)
+        except Exception:
+            pass
+        return False, to_text(error)

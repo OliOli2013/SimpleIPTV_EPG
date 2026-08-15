@@ -1,44 +1,69 @@
-# Simple IPTV EPG v1.3 🚀
+# Simple IPTV EPG 3.0.0 r1
 
-![Logo](src/Kod_QR_buycoffee.png)
+**Simple IPTV EPG** is an AIO XMLTV + SAT EPG utility for **Enigma2** receivers. Version **3.0.0 build r1** is a major architectural and user-interface rebuild focused on reliable IPTV EPG import, safer channel mapping, diagnostics and day-to-day usability.
 
-## 🇵🇱 Opis (PL)
-**Lekki, inteligentny i hybrydowy importer EPG dla Enigma2.**
-Wtyczka rozwiązuje problem braku EPG na listach IPTV. Działa hybrydowo: pobiera pliki XML z internetu oraz **kopiuje EPG z kanałów satelitarnych** (jeśli są dostępne na liście).
+## Main features
 
-**Nowość w v1.3:**
-* Pełna obsługa list typu **MAC Portal / Stalker** (JediMaker, XStreamity).
-* Nowy silnik skanowania (czyta systemową bazę `lamedb`), naprawiający problem "0 połączonych kanałów SAT".
-* Możliwość ukrycia wtyczki w tle (Czerwony przycisk).
+- automatic discovery of IPTV services from Enigma2 bouquets;
+- XMLTV download with fallback sources and full XML/XML.GZ validation;
+- exact `tvg-id`, `epg-id` and `xmltv-id` matching before conservative name matching;
+- ambiguity rejection instead of guessing uncertain channel mappings;
+- optional SAT → IPTV EPG cloning;
+- direct event injection into Enigma2 `eEPGCache`;
+- mapping cache tied to the effective XMLTV URL, bouquet signature and mapper sensitivity;
+- automatic EPG scheduler: 6 / 12 / 24 / 48 hours;
+- custom XML/XML.GZ source URL;
+- source test, diagnostics, log viewer and cache cleanup tools;
+- persistent state/report information under `/etc/enigma2`;
+- adaptive AIO IPTV PL interface inspired by AIO Panel and other AIO projects;
+- project information screen with QR code, author details and support QR;
+- Python 2 / Python 3 compatible code paths.
 
-## 🇬🇧 Description (EN)
-**Lightweight, smart, and hybrid EPG Importer for Enigma2.**
-This plugin solves the missing EPG issue on IPTV channels. It works in hybrid mode: downloading XML files from the web AND **copying EPG data from Satellite channels** (if available in your bouquets).
+## Controls
 
-**New in v1.3:**
-* Full support for **MAC Portal / Stalker** playlists (JediMaker, XStreamity).
-* New Core Engine (reads system `lamedb`), fixing the "0 linked SAT channels" issue.
-* Background mode (Red button hides the plugin).
+- **RED** – close;
+- **GREEN** – import EPG;
+- **YELLOW** – test selected source;
+- **BLUE / MENU** – tools;
+- **INFO** – project information and QR;
+- **OK** – save settings.
 
----
+## Installation
 
-## 🔥 Główne funkcje / Key Features
+Connect to the receiver through SSH/Telnet and run:
 
-* **🌍 International Sources:** Wbudowane źródła EPG dla: **PL, UK, DE, IT, ES, Global** (EPG Share, EPG.PW, IPTV-Org).
-* **🧠 Smart Linking (SAT -> IPTV):**
-    * Automatycznie łączy kanały SAT z IPTV (np. `TVP 1 HD` -> `TVP1 FHD VIP`).
-    * Ignoruje śmieci w nazwach: `HEVC`, `FHD`, `RAW`, `4K`, `PL`, `H.265`.
-* **📺 MAC/Stalker Fix:** Poprawnie wykrywa strumienie IPTV udające kanały DVB (`1:0:1...http...`).
-* **🚀 Fast Mapper:** Błyskawiczne mapowanie XML (słownikowe) – tysiące kanałów w kilka sekund.
-* **🔴 Background Mode:** Naciśnij **Czerwony**, aby ukryć wtyczkę i oglądać TV. Wtyczka powiadomi Cię, gdy skończy pobieranie.
-* **⚡ Performance:** Zwiększony limit czasu (do 45 min) dla ogromnych plików XML.
+```sh
+wget -qO - https://raw.githubusercontent.com/OliOli2013/SimpleIPTV_EPG/main/installer.sh | /bin/sh
+```
 
----
+After installation restart the Enigma2 GUI.
 
-## 📥 Instalacja / Installation
+## Runtime files
 
-Zaloguj się do tunera przez terminal (SSH/Telnet) i wklej komendę:
-**Connect to your STB via Terminal (SSH/Telnet) and run:**
+- `/tmp/simpleiptvepg.log` – runtime log;
+- `/etc/enigma2/simpleiptvepg_state.json` – last-run state;
+- `/etc/enigma2/simpleiptvepg_report.json` – detailed last report;
+- `/etc/enigma2/simpleiptvepg_mapping.json` – mapping cache;
+- `/etc/enigma2/simpleiptvepg_overrides.json` – optional manual overrides.
 
-```bash
-wget -qO - [https://raw.githubusercontent.com/OliOli2013/SimpleIPTV_EPG/main/installer.sh](https://raw.githubusercontent.com/OliOli2013/SimpleIPTV_EPG/main/installer.sh) | /bin/sh
+Example manual override:
+
+```json
+{
+  "TVP1": "tvp1.pl",
+  "TVN24": "tvn24.pl"
+}
+```
+
+## 3.0.0 r1 hotfix
+
+Build **r1** fixes GUI layering on Enigma2 skins/images where static `eLabel` backgrounds covered dynamic widgets. Explicit `zPosition` values were added to all plugin screens, restoring visibility of titles, configuration rows, status text, key captions, logos and QR codes.
+
+The upstream plugin version remains **3.0.0**. The package/build revision is **r1**.
+
+## Project
+
+**AIO IPTV PL**  
+**Author:** Paweł Pawełek  
+**E-mail:** aio-iptv@wp.pl  
+**Website:** https://olioli2013.github.io/aio-iptv-projekt/
