@@ -1,0 +1,8 @@
+Simple IPTV EPG 3.1.0-r1
+
+1. Zainstaluj do testów załączony pakiet IPK.
+2. Po testach zaktualizuj istniejące repozytorium SimpleIPTV_EPG: wypakuj ZIP na bieżący checkout, zastępując zawartość katalogu src oraz pliki README.md, CHANGELOG.txt, version i installer.sh.
+3. Wykonaj commit/push przez GitKraken. Bez tego AIO Panel nadal pobierze starszy kod z main.
+4. Po potwierdzeniu testu na tunerze używaj aktualizacji z AIO Panel.
+
+WAŻNE: Nie wgrywaj do publicznego repo plików .sources.xml/.channels.xml zawierających dane dostawcy.

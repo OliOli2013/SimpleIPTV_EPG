@@ -2,6 +2,7 @@
 from __future__ import absolute_import, print_function
 
 SOURCE_DEFINITIONS = [
+    {"id": "BMX_AUTO", "label_pl": "BouquetMakerXtream - EPG dostawcy (AUTO)", "label_en": "BouquetMakerXtream - provider EPG (AUTO)", "urls": []},
     {
         "id": "AUTO_AIO",
         "label_pl": "AUTO AIO Polska - zgodność z ustawieniami 2.x",

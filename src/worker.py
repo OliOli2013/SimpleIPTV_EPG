@@ -14,8 +14,11 @@ from .constants import MAPPING_FILE, REPORT_FILE, TMP_DIR
 from .epgcore import (
     EPGParser, SafeEPGInjector, clone_sat_to_iptv, download_file,
     load_overrides, probe_url, safe_update_plugin, save_epg_cache_main,
-    read_remote_version, is_newer_version,
+    read_remote_version, is_newer_version, verify_epg_main,
     scan_bouquet_services, source_fingerprint, validate_xmltv_file,
+)
+from .epgimport_bridge import (
+    discover_bmx_sources, import_bmx_mapping, channels_signature, combine_maps, safe_url,
 )
 from .logger import log_message
 from .settings import cfg
@@ -66,39 +69,57 @@ class EPGWorker(object):
 
     def _selected_sources(self):
         source_id = cfg.source_select.value
+        if source_id == "BMX_AUTO":
+            return [(item["id"], item["url"], item["channels"]) for item in discover_bmx_sources()]
         if source_id == "CUSTOM":
             url = to_text(cfg.custom_url.value).strip()
             if url.startswith("http://") or url.startswith("https://"):
-                return [(source_id, url)]
+                # Custom XMLTV can also use BMX channel mapping if the URL matches.
+                matches = [item for item in discover_bmx_sources() if item['url'] == url]
+                return [(source_id, url, matches[0]['channels'] if matches else None)]
             return []
         source = SOURCE_MAP.get(source_id) or SOURCE_MAP.get("AUTO_PL")
-        return [(source_id, url) for url in (source.get("urls") or [])]
+        return [(source_id, url, None) for url in (source.get("urls") or [])]
 
     def _download_source(self, callback):
         sources = self._selected_sources()
         if not sources:
             self._log(callback, "Nie ustawiono prawidłowego źródła XMLTV.")
-            return None, None, None
+            return None, None, None, None
         ensure_dir(TMP_DIR)
-        for index, (source_id, url) in enumerate(sources):
-            suffix = ".xml.gz" if url.lower().endswith(".gz") else ".xml"
+        for index, (source_id, url, channels) in enumerate(sources):
+            suffix = ".xml.gz" if url.lower().split('?', 1)[0].endswith(".gz") else ".xml"
             target = os.path.join(TMP_DIR, "guide-%s%s" % (source_fingerprint(url), suffix))
-            self._log(callback, "Źródło %s/%s: %s" % (index + 1, len(sources), url))
+            self._log(callback, "Źródło %s/%s: %s" % (index + 1, len(sources), safe_url(url)))
             if not download_file(url, target, timeout=240, retries=2, log_cb=callback):
                 self._log(callback, "Pobieranie nie powiodło się – próbuję kolejnego źródła.")
                 continue
+            # Detect GZIP by bytes, not URL suffix (e.g. provider xmltv.php?user=).
+            try:
+                with open(target, "rb") as probe:
+                    compressed = probe.read(2) == b"\x1f\x8b"
+                desired = os.path.splitext(target)[0] if not compressed and target.endswith(".gz") else target
+                if compressed and not target.endswith(".gz"):
+                    desired = target + ".gz"
+                if desired != target:
+                    if os.path.exists(desired):
+                        os.remove(desired)
+                    os.rename(target, desired)
+                    target = desired
+            except Exception as error:
+                self._log(callback, "Rozpoznawanie kompresji: %s" % error)
             valid, reason = validate_xmltv_file(target)
             if valid:
-                self._log(callback, "XMLTV poprawny: %s" % url)
-                return target, source_id, url
+                self._log(callback, "XMLTV poprawny: %s" % safe_url(url))
+                return target, source_id, url, channels
             self._log(callback, "Odrzucono nieprawidłowy XMLTV (%s)." % reason)
             try:
                 os.remove(target)
             except Exception:
                 pass
-        return None, None, None
+        return None, None, None, None
 
-    def _mapping_cache(self, signature, source_url, sensitivity):
+    def _mapping_cache(self, signature, source_url, sensitivity, channel_sig=""):
         payload = load_json(MAPPING_FILE, {})
         if not isinstance(payload, dict):
             return None, {}
@@ -108,18 +129,25 @@ class EPGWorker(object):
             return None, meta
         if meta.get("services_signature") != signature:
             return None, meta
-        if meta.get("source_url") != source_url:
+        if meta.get("source_hash") != source_fingerprint(source_url):
             return None, meta
         if meta.get("sensitivity") != sensitivity:
             return None, meta
+        if meta.get("channel_signature", "") != channel_sig:
+            return None, meta
+        if meta.get("mapping_format") != 2:
+            return None, meta
         return mapping, meta
 
-    def _save_mapping(self, mapping, signature, source_id, source_url, sensitivity, stats):
+    def _save_mapping(self, mapping, signature, source_id, source_url, sensitivity, stats, channel_sig=""):
         payload = {
             "_meta": {
                 "services_signature": signature,
                 "source_id": source_id,
-                "source_url": source_url,
+                "source_url": safe_url(source_url),
+                "source_hash": source_fingerprint(source_url),
+                "mapping_format": 2,
+                "channel_signature": channel_sig,
                 "source_fingerprint": source_fingerprint(source_url),
                 "sensitivity": sensitivity,
                 "saved_at": int(time.time()),
@@ -192,7 +220,7 @@ class EPGWorker(object):
             update_state(last_result="failed", last_error="Brak kanałów IPTV live")
             return False, {"error": "Brak kanałów IPTV live"}
 
-        xml_path, source_id, source_url = self._download_source(callback)
+        xml_path, source_id, source_url, native_channels_path = self._download_source(callback)
         if not xml_path:
             update_state(last_result="failed", last_error="Nie udało się pobrać prawidłowego XMLTV")
             return False, {"error": "Nie udało się pobrać prawidłowego XMLTV"}
@@ -201,18 +229,30 @@ class EPGWorker(object):
         sensitivity = cfg.mapping_sensitivity.value or "balanced"
         mapping = None
         mapping_stats = {}
+        channel_sig = channels_signature(native_channels_path)
         if not force_mapping:
-            mapping, _meta = self._mapping_cache(signature, source_url, sensitivity)
+            mapping, _meta = self._mapping_cache(signature, source_url, sensitivity, channel_sig)
         if mapping:
-            self._log(callback, "Używam poprawnego cache mapowania dla tego źródła i aktualnych bukietów.")
+            self._log(callback, "Wczytano mapowanie zgodne z aktualnymi bukietami i plikiem BMX.")
             mapping_stats = {"groups": len(iptv), "matched_groups": -1, "xml_ids": len(mapping), "cached": True}
         else:
-            self._log(callback, "Budowanie inteligentnego mapowania XMLTV...")
+            native_map = {}
+            native_stats = {}
+            if native_channels_path:
+                self._log(callback, "Dopasowanie XMLTV IDs według BouquetMakerXtream channels.xml...")
+                native_map, native_stats = import_bmx_mapping(native_channels_path, iptv)
+                self._log(callback, "BMX: %s/%s dopasowanych wpisów" % (
+                    native_stats.get('bmx_matches', 0), native_stats.get('bmx_channels', 0)))
+            self._log(callback, "Mapowanie pozostałych kanałów na podstawie nazw i tvg-id...")
             mapper = AutoMapper(callback, sensitivity=sensitivity, overrides=load_overrides())
-            mapping, mapping_stats = mapper.generate_mapping(iptv, xml_path)
+            fallback_map, mapping_stats = mapper.generate_mapping(iptv, xml_path)
+            mapping = combine_maps(native_map, fallback_map)
+            mapping_stats.update(native_stats)
+            mapping_stats['xml_ids'] = len(mapping)
+            mapping_stats['bmx_id_count'] = len(native_map)
             if mapping:
-                self._save_mapping(mapping, signature, source_id, source_url, sensitivity, mapping_stats)
-            self._log(callback, "Mapowanie: %s XML ID | niedopasowane: %s | niejednoznaczne: %s" % (
+                self._save_mapping(mapping, signature, source_id, source_url, sensitivity, mapping_stats, channel_sig)
+            self._log(callback, "Mapowanie: %s XML ID | nierozpoznane po nazwie: %s | niejednoznaczne: %s" % (
                 len(mapping or {}), mapping_stats.get("unmatched", 0), mapping_stats.get("ambiguous", 0)))
 
         injector = SafeEPGInjector(self.bridge.call)
@@ -251,10 +291,21 @@ class EPGWorker(object):
             except Exception as error:
                 self._log(callback, "Nie udało się wymusić zapisu bazy EPG: %s" % error)
 
+        checked = {"checked": 0, "visible": 0}
+        if injector.total_events > 0 and xml_refs:
+            try:
+                checked = self.bridge.call(verify_epg_main, sorted(xml_refs), timeout=20)
+                self._log(callback, "Kontrola EPG na kanałach IPTV: widoczne %s/%s (próbka)." % (
+                    checked.get('visible', 0), checked.get('checked', 0)))
+                if checked.get('checked', 0) > 0 and checked.get('visible', 0) == 0:
+                    self._log(callback, "UWAGA: Import zaakceptowany, lecz EPG niewidoczne w próbce. Sprawdź referencje kanałów / ustawienia image.")
+            except Exception as error:
+                self._log(callback, "Kontrola widoczności EPG niedostępna: %s" % error)
+
         duration = int(time.time() - started)
         report = {
             "source_id": source_id,
-            "source_url": source_url,
+            "source_url": safe_url(source_url),
             "iptv_services": len(iptv),
             "sat_services": len(sat),
             "skipped_nonlive": skipped,
@@ -266,6 +317,7 @@ class EPGWorker(object):
             "injector_events": injector.total_events,
             "injector_errors": injector.errors,
             "mapping": mapping_stats,
+            "verification": checked,
             "duration_seconds": duration,
             "success": bool(injector.total_events > 0),
         }
@@ -273,7 +325,7 @@ class EPGWorker(object):
         if injector.total_events <= 0:
             update_state(
                 last_result="failed", last_error="Nie zaimportowano żadnych zdarzeń EPG",
-                last_source=source_url, last_duration=duration, last_iptv=len(iptv), last_sat=len(sat),
+                last_source=safe_url(source_url), last_duration=duration, last_iptv=len(iptv), last_sat=len(sat),
                 last_xml_channels=len(xml_channels), last_xml_events=xml_events,
                 last_sat_channels=int(sat_stats.get("channels", 0)), last_inject_errors=injector.errors,
             )
@@ -281,7 +333,7 @@ class EPGWorker(object):
             self._log(callback, "Import zakończony bez danych: do eEPGCache nie trafiło żadne zdarzenie.")
             return False, dict(report, error="Nie zaimportowano żadnych zdarzeń EPG")
         update_state(
-            last_success=int(time.time()), last_source=source_url, last_result="success", last_error="",
+            last_success=int(time.time()), last_source=safe_url(source_url), last_result="success", last_error="",
             last_duration=duration, last_iptv=len(iptv), last_sat=len(sat),
             last_xml_channels=len(xml_channels), last_xml_events=xml_events,
             last_sat_channels=int(sat_stats.get("channels", 0)), last_inject_errors=injector.errors,
@@ -304,16 +356,21 @@ class EPGWorker(object):
                 iptv = scan.get("iptv", [])
                 if not iptv:
                     raise RuntimeError("Brak kanałów IPTV live")
-                xml_path, source_id, source_url = self._download_source(callback)
+                xml_path, source_id, source_url, native_channels_path = self._download_source(callback)
                 if not xml_path:
                     raise RuntimeError("Nie udało się pobrać XMLTV")
                 sensitivity = cfg.mapping_sensitivity.value or "balanced"
                 mapper = AutoMapper(callback, sensitivity=sensitivity, overrides=load_overrides())
-                mapping, stats = mapper.generate_mapping(iptv, xml_path)
+                fallback_map, stats = mapper.generate_mapping(iptv, xml_path)
+                native_map, native_stats = import_bmx_mapping(native_channels_path, iptv)
+                mapping = combine_maps(native_map, fallback_map)
+                stats.update(native_stats)
+                stats['xml_ids'] = len(mapping)
                 if mapping:
-                    self._save_mapping(mapping, scan.get("services_signature", ""), source_id, source_url, sensitivity, stats)
+                    self._save_mapping(mapping, scan.get("services_signature", ""), source_id, source_url, sensitivity, stats,
+                                       channels_signature(native_channels_path))
                 result = stats
-                result["source_url"] = source_url
+                result["source_url"] = safe_url(source_url)
                 save_report({"mapping_only": result})
                 self._log(callback, "Mapowanie zakończone: %s/%s grup, XML ID: %s" % (
                     stats.get("matched_groups", 0), stats.get("groups", 0), stats.get("xml_ids", 0)))
@@ -337,10 +394,10 @@ class EPGWorker(object):
             ok = False
             results = []
             try:
-                for _source_id, url in self._selected_sources():
-                    self._log(callback, "Test: %s" % url)
+                for _source_id, url, _channels in self._selected_sources():
+                    self._log(callback, "Test: %s" % safe_url(url))
                     good, message, latency = probe_url(url)
-                    results.append({"url": url, "ok": good, "message": message, "latency_ms": latency})
+                    results.append({"url": safe_url(url), "ok": good, "message": message, "latency_ms": latency})
                     self._log(callback, "%s | %sms | %s" % ("OK" if good else "BŁĄD", latency, message))
                     if good:
                         ok = True

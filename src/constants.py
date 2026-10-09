@@ -2,7 +2,7 @@
 from __future__ import absolute_import, print_function
 
 PLUGIN_TITLE = "Simple IPTV EPG"
-PLUGIN_VERSION = "3.0.0"
+PLUGIN_VERSION = "3.1.0"
 PLUGIN_BUILD = "r1"
 PLUGIN_AUTHOR = "Paweł Pawełek"
 PLUGIN_EMAIL = "aio-iptv@wp.pl"

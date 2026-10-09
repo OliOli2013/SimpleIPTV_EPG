@@ -62,8 +62,14 @@ class AutoMapper(object):
         entries = {}
         opener = gzip.open if str(xml_path).lower().endswith(".gz") else open
         with opener(xml_path, "rb") as handle:
-            context = ET.iterparse(handle, events=("end",))
-            for _event, elem in context:
+            context = ET.iterparse(handle, events=("start", "end"))
+            root = None
+            processed_programmes = 0
+            for event_type, elem in context:
+                if root is None and event_type == "start":
+                    root = elem
+                if event_type != "end":
+                    continue
                 tag = local_tag(elem.tag)
                 if tag == "channel":
                     xml_id = elem.get("id") or ""
@@ -89,8 +95,10 @@ class AutoMapper(object):
                     entries[xml_id] = {"compacts": compacts, "tokens": tokens}
                     elem.clear()
                 elif tag == "programme":
-                    # XMLTV places channels before programmes. Stop after channel index is built.
-                    break
+                    processed_programmes += 1
+                    elem.clear()
+                    if root is not None and processed_programmes % 250 == 0:
+                        root.clear()
         return exact_index, token_index, id_index, entries
 
     def _candidate_xml_ids(self, group, exact_index, token_index, entries):

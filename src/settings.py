@@ -29,8 +29,8 @@ cfg.auto_interval = ConfigSelection(default="24", choices=[
     ("0", "Wyłączony / Off"), ("6", "6 h"), ("12", "12 h"), ("24", "24 h"), ("48", "48 h"),
 ])
 cfg.import_days = ConfigSelection(default="5", choices=[("2", "2"), ("3", "3"), ("5", "5"), ("7", "7"), ("10", "10")])
-cfg.clone_sat = ConfigYesNo(default=True)
-cfg.prefer_sat = ConfigYesNo(default=True)
+cfg.clone_sat = ConfigYesNo(default=False)
+cfg.prefer_sat = ConfigYesNo(default=False)
 cfg.mapping_sensitivity = ConfigSelection(default="balanced", choices=[
     ("strict", "Ścisłe / Strict"), ("balanced", "Zbalansowane / Balanced"), ("flexible", "Elastyczne / Flexible"),
 ])

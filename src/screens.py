@@ -2,6 +2,7 @@
 from __future__ import absolute_import, print_function
 
 import os
+import glob
 import sys
 import time
 
@@ -23,6 +24,7 @@ from .constants import (
     PLUGIN_AUTHOR, PLUGIN_BUILD, PLUGIN_EMAIL, PLUGIN_TITLE, PLUGIN_VERSION, PROJECT_NAME,
     PROJECT_URL, REPORT_FILE, STATE_FILE,
 )
+from .epgimport_bridge import discover_bmx_sources
 from .logger import clear_log, log_message
 from .settings import cfg, save_config, tr
 from .storage import load_json, load_state
@@ -443,6 +445,11 @@ class DiagnosticsScreen(Screen):
             "IPTV / SAT: %s / %s" % (state.get("last_iptv", "—"), state.get("last_sat", "—")),
             "XMLTV kanały / zdarzenia: %s / %s" % (state.get("last_xml_channels", "—"), state.get("last_xml_events", "—")),
             "Błędy eEPGCache: %s" % state.get("last_inject_errors", "—"),
+            "",
+            "Mapowanie BMX / EPGImport:",
+            "  pliki sources.xml: %s" % len(glob.glob("/etc/epgimport/bouquetmakerxtream*.sources.xml")),
+            "  wykryte EPG XMLTV: %s" % len(discover_bmx_sources()),
+            "  trafienia BMX: %s" % ((report.get("mapping") or {}).get("bmx_matches", "—") if isinstance(report, dict) else "—"),
             "",
             "Cache mapowania:",
             "  źródło: %s" % (meta.get("source_url") or "—"),

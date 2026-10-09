@@ -402,7 +402,10 @@ def validate_xmltv_file(path):
     try:
         with opener(path, "rb") as handle:
             context = ET.iterparse(handle, events=("start", "end"))
+            root = None
             for event, elem in context:
+                if root is None and event == "start":
+                    root = elem
                 tag = local_tag(elem.tag)
                 if event == "start" and not root_seen:
                     root_seen = True
@@ -414,6 +417,8 @@ def validate_xmltv_file(path):
                     elif tag == "programme":
                         programmes += 1
                     elem.clear()
+                    if root is not None and tag == "programme" and programmes % 250 == 0:
+                        root.clear()
         if not root_seen:
             return False, "no-root"
         if channels < 1:
@@ -605,18 +610,43 @@ def _import_events_main(payload_by_ref):
         if not cleaned:
             continue
         try:
-            cache.importEvents(to_text(service_ref), tuple(cleaned))
+            if hasattr(cache, "importEvents"):
+                # Enigma2's importEvents expects a sequence of service references.
+                # Passing a bare string can cause a failed or invisible import.
+                cache.importEvents((to_text(service_ref),), tuple(cleaned))
+            elif hasattr(cache, "importEvent"):
+                cache.importEvent(to_text(service_ref), tuple(cleaned))
+            else:
+                raise RuntimeError("eEPGCache importEvents/importEvent unavailable")
             service_count += 1
             event_count += len(cleaned)
-        except Exception:
-            try:
-                cache.importEvents(eServiceReference(to_text(service_ref)), tuple(cleaned))
-                service_count += 1
-                event_count += len(cleaned)
-            except Exception as error:
-                errors += 1
-                log_message("importEvents failed %s: %s" % (service_ref, error))
+        except Exception as error:
+            errors += 1
+            log_message("importEvents failed (service hash %s): %s" % (
+                hashlib.sha256(to_bytes(service_ref)).hexdigest()[:10], error))
     return {"services": service_count, "events": event_count, "errors": errors}
+
+
+def verify_epg_main(refs):
+    """Check that imported data is actually queryable on live Enigma2."""
+    try:
+        from enigma import eEPGCache, eServiceReference
+        cache = eEPGCache.getInstance()
+        if cache is None:
+            return {"checked": 0, "visible": 0}
+        visible = 0
+        checked = 0
+        for ref in list(refs)[:16]:
+            try:
+                checked += 1
+                item = cache.lookupEventTime(eServiceReference(to_text(ref)), int(time.time()))
+                if item is not None:
+                    visible += 1
+            except Exception:
+                pass
+        return {"checked": checked, "visible": visible}
+    except Exception:
+        return {"checked": 0, "visible": 0}
 
 
 def save_epg_cache_main():
@@ -762,9 +792,12 @@ class EPGParser(object):
         processed = 0
         matched = 0
         with opener(self.source_path, "rb") as handle:
-            context = ET.iterparse(handle, events=("end",))
-            for _event, elem in context:
-                if local_tag(elem.tag) != "programme":
+            context = ET.iterparse(handle, events=("start", "end"))
+            root = None
+            for event_type, elem in context:
+                if root is None and event_type == "start":
+                    root = elem
+                if event_type != "end" or local_tag(elem.tag) != "programme":
                     continue
                 processed += 1
                 channel_id = to_text(elem.get("channel") or "")
@@ -800,6 +833,8 @@ class EPGParser(object):
                             matched += 1
                             yield ref, payload, channel_id
                 elem.clear()
+                if root is not None and processed % 250 == 0:
+                    root.clear()
                 if progress_cb and processed % 50000 == 0:
                     progress_cb("XMLTV: %s programów | dopasowań: %s" % (processed, matched))
 
@@ -853,10 +888,8 @@ def safe_update_plugin(log_cb=None):
         for candidate in local_candidates:
             if os.path.exists(candidate):
                 commands.append([opkg, "install", "--force-reinstall", "--force-overwrite", candidate])
-        commands.extend([
-            [opkg, "install", "--force-reinstall", "--force-overwrite", PACKAGE_NAME],
-            [opkg, "upgrade", PACKAGE_NAME],
-        ])
+        # Do not fetch unspecified package versions from third-party feeds:
+        # an older feed could silently replace this new AIO build.
     for command in commands:
         code, output = run_command(command, timeout=600)
         if log_cb:
@@ -866,6 +899,10 @@ def safe_update_plugin(log_cb=None):
         if code == 0:
             return True, output or "OK"
 
+    from .constants import PLUGIN_VERSION
+    remote_version = read_remote_version()
+    if not remote_version or not is_newer_version(remote_version, PLUGIN_VERSION):
+        return False, "Repozytorium nie zawiera nowszej wersji. Zainstaluj IPK ręcznie lub zaktualizuj repozytorium."
     ensure_dir(TMP_DIR)
     installer = os.path.join(TMP_DIR, "installer.sh")
     try:

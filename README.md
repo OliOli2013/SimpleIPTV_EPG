@@ -1,69 +1,48 @@
-# Simple IPTV EPG 3.0.0 r1
+# Simple IPTV EPG 3.1.0 r1 — AIO IPTV PL
 
-**Simple IPTV EPG** is an AIO XMLTV + SAT EPG utility for **Enigma2** receivers. Version **3.0.0 build r1** is a major architectural and user-interface rebuild focused on reliable IPTV EPG import, safer channel mapping, diagnostics and day-to-day usability.
+Wtyczka Enigma2 (Python 2 i Python 3) importuje XMLTV do EPG kanałów w bukietach IPTV. Nie zastępuje BouquetMakerXtream ani EPGImport, nie edytuje bukietów.
 
-## Main features
+## Nowości
 
-- automatic discovery of IPTV services from Enigma2 bouquets;
-- XMLTV download with fallback sources and full XML/XML.GZ validation;
-- exact `tvg-id`, `epg-id` and `xmltv-id` matching before conservative name matching;
-- ambiguity rejection instead of guessing uncertain channel mappings;
-- optional SAT → IPTV EPG cloning;
-- direct event injection into Enigma2 `eEPGCache`;
-- mapping cache tied to the effective XMLTV URL, bouquet signature and mapper sensitivity;
-- automatic EPG scheduler: 6 / 12 / 24 / 48 hours;
-- custom XML/XML.GZ source URL;
-- source test, diagnostics, log viewer and cache cleanup tools;
-- persistent state/report information under `/etc/enigma2`;
-- adaptive AIO IPTV PL interface inspired by AIO Panel and other AIO projects;
-- project information screen with QR code, author details and support QR;
-- Python 2 / Python 3 compatible code paths.
+- **BouquetMakerXtream — EPG dostawcy (AUTO)**: odczytuje `/etc/epgimport/bouquetmakerxtream*.sources.xml` i powiązane `*.channels.xml`, dopasowuje XMLTV ID do referencji kanałów IPTV zapisanych na tunerze.
+- Alternatywnie można wybrać `AUTO Polska` lub podać **własny URL XMLTV**; zachowano poprzednie źródła.
+- Poprawiony interfejs z natywnym API `eEPGCache.importEvents((ref,), events)`.
+- Obsługa XMLTV i XMLTV.GZ (także skompresowany zwrot z `xmltv.php?...`).
+- Automatyczne dopasowanie nazw dla brakujących mapowań; istniejące powiązania BMX mają pierwszeństwo.
+- Dziennik, próbkowa weryfikacja widoczności EPG, raport liczby dopasowań.
+- Możliwość kopiowania SAT → IPTV jako opcja, domyślnie wyłączona przy nowych instalacjach.
 
-## Controls
+## Uruchomienie z BMX
 
-- **RED** – close;
-- **GREEN** – import EPG;
-- **YELLOW** – test selected source;
-- **BLUE / MENU** – tools;
-- **INFO** – project information and QR;
-- **OK** – save settings.
+1. Stwórz bukiety IPTV w BouquetMakerXtream i upewnij się, że w `/etc/epgimport/` są pliki `bouquetmakerxtream*.sources.xml` i `.channels.xml`.
+2. Wtyczka Simple IPTV EPG → **Źródło EPG: BouquetMakerXtream — EPG dostawcy (AUTO)**.
+3. Żółty: **Test źródła**. Zielony: **Importuj EPG**.
+4. Niebieski → **Diagnostyka**. Sprawdź `trafienia BMX`, `XMLTV kanały/zdarzenia` i kontrolę widoczności.
+5. Jeśli nie ma mapowania w BMX, wybierz `CUSTOM` (adres XMLTV) lub inne źródło i sprawdź listę niedopasowanych usług w `/etc/enigma2/simpleiptvepg_report.json`.
 
-## Installation
+**Uwaga:** Sam link XMLTV nie gwarantuje EPG. Wymagana jest zgodność `channel id` i prawidłowej referencji usług (lub pewne dopasowanie po nazwie). Jeśli źródło nie zawiera danego programu, wtyczka go nie wymyśli.
 
-Connect to the receiver through SSH/Telnet and run:
+## Instalacja IPK
+
+Przenieś IPK do `/tmp/`, połącz się SSH i wykonaj:
 
 ```sh
-wget -qO - https://raw.githubusercontent.com/OliOli2013/SimpleIPTV_EPG/main/installer.sh | /bin/sh
+opkg install /tmp/enigma2-plugin-extensions-simpleiptvepg_3.1.0-r1_all.ipk
 ```
 
-After installation restart the Enigma2 GUI.
+Jeśli w obrazie jest dpkg zamiast opkg, użyj `dpkg -i /tmp/...ipk` **tylko jeśli menedżer pakietów obrazu obsługuje ten format**. Po instalacji zrestartuj GUI Enigma2.
 
-## Runtime files
+## AIO Panel
 
-- `/tmp/simpleiptvepg.log` – runtime log;
-- `/etc/enigma2/simpleiptvepg_state.json` – last-run state;
-- `/etc/enigma2/simpleiptvepg_report.json` – detailed last report;
-- `/etc/enigma2/simpleiptvepg_mapping.json` – mapping cache;
-- `/etc/enigma2/simpleiptvepg_overrides.json` – optional manual overrides.
+Pozostawiono bez zmian `enigma2-plugin-extensions-simpleiptvepg` oraz katalog `Plugins/Extensions/SimpleIPTV_EPG`. AIO Panel korzysta z `https://raw.githubusercontent.com/OliOli2013/SimpleIPTV_EPG/main/installer.sh` — żeby użytkownicy AIO dostawali tę wersję, należy wgrać **źródła z ZIP** do repozytorium `SimpleIPTV_EPG` (a potem zmienić `version`). Do chwili aktualizacji repozytorium AIO Panel nadal zainstaluje starszą wersję.
 
-Example manual override:
+## Pliki użytkownika
 
-```json
-{
-  "TVP1": "tvp1.pl",
-  "TVN24": "tvn24.pl"
-}
-```
+- `/etc/enigma2/simpleiptvepg_mapping.json` — cache mapowania;
+- `/etc/enigma2/simpleiptvepg_overrides.json` — ręczne mapowanie, np. `{ "TVP1": "TVP1.pl" }`;
+- `/etc/enigma2/simpleiptvepg_report.json` — raport;
+- `/tmp/simpleiptvepg.log` — log importu.
 
-## 3.0.0 r1 hotfix
+Nie zapisujemy danych logowania do repozytorium GitHub. W URL wpisanym na tunerze mogą występować dane dostępowe — raport i nowe logi maskują linki.
 
-Build **r1** fixes GUI layering on Enigma2 skins/images where static `eLabel` backgrounds covered dynamic widgets. Explicit `zPosition` values were added to all plugin screens, restoring visibility of titles, configuration rows, status text, key captions, logos and QR codes.
-
-The upstream plugin version remains **3.0.0**. The package/build revision is **r1**.
-
-## Project
-
-**AIO IPTV PL**  
-**Author:** Paweł Pawełek  
-**E-mail:** aio-iptv@wp.pl  
-**Website:** https://olioli2013.github.io/aio-iptv-projekt/
+**Autor: Paweł Pawełek — AIO IPTV PL**
