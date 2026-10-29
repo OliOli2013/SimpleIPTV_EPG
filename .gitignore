@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+.simpleiptvepg_backup_*/
+
+*.ipk
+*.deb
+
+*.log
+*.part
+*.tmp
