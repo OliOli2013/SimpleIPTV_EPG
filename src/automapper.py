@@ -139,9 +139,13 @@ class AutoMapper(object):
                 if left == right:
                     return 1.0
                 if left.startswith(right) or right.startswith(left):
-                    best = max(best, 0.965)
+                    short, long = (left, right) if len(left) < len(right) else (right, left)
+                    suffix = long[len(short):]
+                    # BBC One vs BBC One Scotland, TVP1 vs TVP10 etc.
+                    if len(short) >= 5 and not (suffix and suffix[0].isdigit()):
+                        best = max(best, 0.90)
                 elif left in right or right in left:
-                    best = max(best, 0.935)
+                    best = max(best, 0.85)
                 else:
                     best = max(best, difflib.SequenceMatcher(None, left, right).ratio())
         if overlap:
@@ -201,7 +205,8 @@ class AutoMapper(object):
                     second_score = options[1][0] if len(options) > 1 else 0.0
                     exactish = top_score >= 0.985
                     # Reject fuzzy ties; a wrong EPG is worse than no EPG.
-                    if exactish or second_score == 0.0 or (top_score - second_score) >= 0.025:
+                    # Two equally good exact aliases are ambiguous too.
+                    if (second_score == 0.0 or (top_score - second_score) >= 0.025):
                         owner = used_xml.get(top_id)
                         if owner is None or owner == group_key:
                             chosen = top_id

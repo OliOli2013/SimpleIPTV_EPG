@@ -3,7 +3,7 @@ from __future__ import absolute_import, print_function
 
 from Components.Language import language
 from Components.config import (
-    ConfigSelection, ConfigSubsection, ConfigText, ConfigYesNo, config,
+    ConfigSelection, ConfigSubsection, ConfigText, ConfigYesNo, config, configfile,
 )
 
 from .sources import source_choices
@@ -23,12 +23,15 @@ if not hasattr(config.plugins, "SimpleIPTV_EPG"):
     config.plugins.SimpleIPTV_EPG = ConfigSubsection()
 
 cfg = config.plugins.SimpleIPTV_EPG
-cfg.source_select = ConfigSelection(default="AUTO_PL", choices=source_choices(LANG))
+cfg.source_select = ConfigSelection(default="AUTO_AIO", choices=source_choices(LANG))
 cfg.custom_url = ConfigText(default="https://", fixed_size=False, visible_width=80)
 cfg.auto_interval = ConfigSelection(default="24", choices=[
     ("0", "Wyłączony / Off"), ("6", "6 h"), ("12", "12 h"), ("24", "24 h"), ("48", "48 h"),
 ])
 cfg.import_days = ConfigSelection(default="5", choices=[("2", "2"), ("3", "3"), ("5", "5"), ("7", "7"), ("10", "10")])
+cfg.fill_missing = ConfigYesNo(default=True)
+cfg.picons_enabled = ConfigYesNo(default=True)
+cfg.picons_online = ConfigYesNo(default=True)
 cfg.clone_sat = ConfigYesNo(default=False)
 cfg.prefer_sat = ConfigYesNo(default=False)
 cfg.mapping_sensitivity = ConfigSelection(default="balanced", choices=[
@@ -41,10 +44,13 @@ cfg.boot_delay = ConfigSelection(default="120", choices=[("60", "60 s"), ("120",
 
 
 def save_config():
+    """Persist settings immediately, and report failures to the UI."""
     try:
         cfg.save()
-    except Exception:
-        pass
+        configfile.save()
+    except Exception as exc:
+        return str(exc)
+    return None
 
 
 TR = {
@@ -53,6 +59,9 @@ TR = {
     "custom": {"pl": "Własny URL XML/XML.GZ", "en": "Custom XML/XML.GZ URL"},
     "interval": {"pl": "Automatyczny import", "en": "Automatic import"},
     "days": {"pl": "Zakres importu (dni)", "en": "Import range (days)"},
+    "fill_missing": {"pl": "Uzupełniaj brakujące EPG z innych źródeł", "en": "Fill missing EPG from other feeds"},
+    "picons_enabled": {"pl": "Uzupełniaj picony IPTV", "en": "Fill IPTV picons"},
+    "picons_online": {"pl": "Szukaj piconów w katalogu internetowym", "en": "Search online logo catalogue"},
     "clone_sat": {"pl": "Kopiuj EPG SAT → IPTV", "en": "Clone SAT EPG → IPTV"},
     "prefer_sat": {"pl": "Preferuj EPG z SAT", "en": "Prefer SAT EPG"},
     "sensitivity": {"pl": "Czułość automatycznego mapowania", "en": "Auto-mapping sensitivity"},

@@ -139,7 +139,8 @@ def _main_skin():
 class SimpleIPTVEPGMain(Screen, ConfigListScreen):
     skin = _main_skin()
 
-    def __init__(self, session):
+    def __init__(self, session, advanced=False):
+        self.advanced = bool(advanced)
         Screen.__init__(self, session)
         set_active_session(session)
         self.closed = False
@@ -147,24 +148,24 @@ class SimpleIPTVEPGMain(Screen, ConfigListScreen):
         self.list = []
         ConfigListScreen.__init__(self, self.list, session=session)
         self["title"] = Label("%s  %s %s" % (PLUGIN_TITLE, PLUGIN_VERSION, PLUGIN_BUILD))
-        self["subtitle"] = Label("AIO XMLTV + SAT EPG • automatyczne mapowanie • diagnostyka")
+        self["subtitle"] = Label("Ustawienia zaawansowane • OK zapisuje" if self.advanced else "AUTO EPG • prosta konfiguracja • Narzędzia: zaawansowane")
         self["pp_logo"] = Pixmap()
         self["project_qr"] = Pixmap()
         self["status_title"] = Label("STATUS")
         self["status"] = ScrollLabel("")
         self["key_red"] = Label("ZAMKNIJ")
-        self["key_green"] = Label("IMPORTUJ EPG")
-        self["key_yellow"] = Label("TEST ŹRÓDŁA")
-        self["key_blue"] = Label("NARZĘDZIA")
+        self["key_green"] = Label("ZAPISZ" if self.advanced else "IMPORTUJ EPG")
+        self["key_yellow"] = Label("WRÓĆ" if self.advanced else "TEST ŹRÓDŁA")
+        self["key_blue"] = Label("WRÓĆ" if self.advanced else "NARZĘDZIA")
         self["footer"] = Label(_footer_text())
         self["actions"] = ActionMap(
             ["SetupActions", "ColorActions", "DirectionActions", "MenuActions", "InfobarEPGActions"],
             {
                 "cancel": self.key_close,
                 "red": self.key_close,
-                "green": self.key_import,
-                "yellow": self.key_probe,
-                "blue": self.key_tools,
+                "green": self.key_green_action,
+                "yellow": self.key_yellow_action,
+                "blue": self.key_blue_action,
                 "menu": self.key_tools,
                 "info": self.key_project,
                 "showEventInfo": self.key_project,
@@ -184,20 +185,29 @@ class SimpleIPTVEPGMain(Screen, ConfigListScreen):
         self.closed = True
 
     def _rebuild_config(self):
-        entries = [getConfigListEntry(tr("source"), cfg.source_select)]
-        if cfg.source_select.value == "CUSTOM":
-            entries.append(getConfigListEntry(tr("custom"), cfg.custom_url))
-        entries.extend([
-            getConfigListEntry(tr("interval"), cfg.auto_interval),
-            getConfigListEntry(tr("days"), cfg.import_days),
-            getConfigListEntry(tr("clone_sat"), cfg.clone_sat),
-            getConfigListEntry(tr("prefer_sat"), cfg.prefer_sat),
-            getConfigListEntry(tr("sensitivity"), cfg.mapping_sensitivity),
-            getConfigListEntry(tr("notify"), cfg.notify_done),
-            getConfigListEntry(tr("save_cache"), cfg.save_epg_cache),
-            getConfigListEntry(tr("keep_xml"), cfg.keep_xml_cache),
-            getConfigListEntry(tr("boot_delay"), cfg.boot_delay),
-        ])
+        # Ordinary users see three safe settings; no option is removed.
+        entries = [getConfigListEntry(tr("source"), cfg.source_select),
+                   getConfigListEntry(tr("interval"), cfg.auto_interval),
+                   getConfigListEntry(tr("picons_enabled"), cfg.picons_enabled)]
+        if self.advanced:
+            if cfg.source_select.value == "CUSTOM":
+                entries.append(getConfigListEntry(tr("custom"), cfg.custom_url))
+            entries.extend([
+                getConfigListEntry(tr("days"), cfg.import_days),
+                getConfigListEntry(tr("fill_missing"), cfg.fill_missing),
+                getConfigListEntry(tr("picons_online"), cfg.picons_online),
+                getConfigListEntry(tr("clone_sat"), cfg.clone_sat),
+                getConfigListEntry(tr("prefer_sat"), cfg.prefer_sat),
+                getConfigListEntry(tr("sensitivity"), cfg.mapping_sensitivity),
+                getConfigListEntry(tr("notify"), cfg.notify_done),
+                getConfigListEntry(tr("save_cache"), cfg.save_epg_cache),
+                getConfigListEntry(tr("keep_xml"), cfg.keep_xml_cache),
+                getConfigListEntry(tr("boot_delay"), cfg.boot_delay),
+            ])
+        elif cfg.clone_sat.value or cfg.prefer_sat.value:
+            # Legacy users must not have risky SAT copying hidden from sight.
+            entries.extend([getConfigListEntry(tr("clone_sat"), cfg.clone_sat),
+                            getConfigListEntry(tr("prefer_sat"), cfg.prefer_sat)])
         self.list = entries
         self["config"].setList(entries)
 
@@ -234,6 +244,24 @@ class SimpleIPTVEPGMain(Screen, ConfigListScreen):
             return True
         return False
 
+    def key_green_action(self):
+        if self.advanced:
+            self.key_save()
+        else:
+            self.key_import()
+
+    def key_yellow_action(self):
+        if self.advanced:
+            self.key_close()
+        else:
+            self.key_probe()
+
+    def key_blue_action(self):
+        if self.advanced:
+            self.key_close()
+        else:
+            self.key_tools()
+
     def key_left(self):
         old = cfg.source_select.value
         ConfigListScreen.keyLeft(self)
@@ -247,11 +275,17 @@ class SimpleIPTVEPGMain(Screen, ConfigListScreen):
             self._rebuild_config()
 
     def key_save(self):
-        save_config()
-        self._append("Ustawienia zapisane.")
+        error = save_config()
+        if error:
+            self.session.open(MessageBox, "Blad zapisu ustawien: %s" % error, MessageBox.TYPE_ERROR, timeout=9)
+        else:
+            self._append("Ustawienia zapisane do /etc/enigma2/settings.")
 
     def key_close(self):
-        save_config()
+        error = save_config()
+        if error:
+            self.session.open(MessageBox, "Blad zapisu ustawien: %s" % error, MessageBox.TYPE_ERROR, timeout=9)
+            return
         if GLOBAL_WORKER.running:
             self.session.openWithCallback(
                 self._close_after_background_info, MessageBox,
@@ -265,7 +299,10 @@ class SimpleIPTVEPGMain(Screen, ConfigListScreen):
             self.close()
 
     def key_import(self, force=False):
-        save_config()
+        error = save_config()
+        if error:
+            self.session.open(MessageBox, "Blad zapisu ustawien: %s" % error, MessageBox.TYPE_ERROR, timeout=9)
+            return
         if self._busy():
             return
         self.log_lines = []
@@ -288,7 +325,10 @@ class SimpleIPTVEPGMain(Screen, ConfigListScreen):
         self.session.open(MessageBox, msg, MessageBox.TYPE_INFO, timeout=9)
 
     def key_probe(self):
-        save_config()
+        error = save_config()
+        if error:
+            self.session.open(MessageBox, "Blad zapisu ustawien: %s" % error, MessageBox.TYPE_ERROR, timeout=9)
+            return
         if self._busy():
             return
         self.log_lines = []
@@ -307,9 +347,14 @@ class SimpleIPTVEPGMain(Screen, ConfigListScreen):
         self.session.open(MessageBox, msg, MessageBox.TYPE_INFO, timeout=8)
 
     def key_tools(self):
+        if self.advanced:
+            self.key_close()
+            return
         choices = [
+            ("Ustawienia zaawansowane", "advanced"),
             ("Wymuś pełny import + nowe mapowanie", "force_import"),
             ("Zbuduj mapowanie bez importu", "mapping"),
+            ("Uzupełnij picony IPTV (bez EPG)", "picons"),
             ("Diagnostyka", "diag"),
             ("Pokaż log", "log"),
             ("Sprawdź aktualizację", "check_update"),
@@ -324,8 +369,14 @@ class SimpleIPTVEPGMain(Screen, ConfigListScreen):
         if not selected:
             return
         action = selected[1]
-        if action == "force_import":
+        if action == "advanced":
+            self.session.open(SimpleIPTVEPGMain, True)
+        elif action == "force_import":
             self.key_import(force=True)
+        elif action == "picons":
+            if not self._busy():
+                self.log_lines = []
+                GLOBAL_WORKER.start_picons(self._worker_log, self._done_picons)
         elif action == "mapping":
             if not self._busy():
                 self.log_lines = []
@@ -351,6 +402,16 @@ class SimpleIPTVEPGMain(Screen, ConfigListScreen):
             self._append("Usunięto %s plików tymczasowych." % count)
         elif action == "project":
             self.key_project()
+
+    def _done_picons(self, ok, result, silent):
+        if self.closed:
+            return
+        if ok:
+            self._append('Picony: %s nowych plików, %s usług rozpoznanych.' % (
+                result.get('created', 0), result.get('covered', 0)))
+        else:
+            self._append('Błąd piconów: %s' % result.get('error', 'sprawdź log'))
+        self._refresh_summary()
 
     def _done_mapping(self, ok, result, silent):
         if self.closed:
@@ -445,6 +506,8 @@ class DiagnosticsScreen(Screen):
             "IPTV / SAT: %s / %s" % (state.get("last_iptv", "—"), state.get("last_sat", "—")),
             "XMLTV kanały / zdarzenia: %s / %s" % (state.get("last_xml_channels", "—"), state.get("last_xml_events", "—")),
             "Błędy eEPGCache: %s" % state.get("last_inject_errors", "—"),
+            "Picony IPTV: %s" % ((report.get('picons') or {}).get('created', '—') if isinstance(report, dict) else '—'),
+            "Uzupełniające źródła: %s" % (len(report.get('extra_sources') or []) if isinstance(report, dict) else '—'),
             "",
             "Mapowanie BMX / EPGImport:",
             "  pliki sources.xml: %s" % len(glob.glob("/etc/epgimport/bouquetmakerxtream*.sources.xml")),

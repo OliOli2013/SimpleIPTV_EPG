@@ -1,0 +1,31 @@
+# -*- coding: utf-8 -*-
+from __future__ import absolute_import, print_function
+
+PLUGIN_TITLE = "Simple IPTV EPG"
+PLUGIN_VERSION = "3.1.0"
+PLUGIN_BUILD = "r1"
+PLUGIN_AUTHOR = "Paweł Pawełek"
+PLUGIN_EMAIL = "aio-iptv@wp.pl"
+PROJECT_NAME = "AIO IPTV PL"
+PROJECT_URL = "https://olioli2013.github.io/aio-iptv-projekt/"
+SUPPORT_URL = "https://buycoffee.to/pawelpawelek/rozwoj-strony-aio-iptv-pl-i-darmowych-projektow-enigma2"
+REPOSITORY_URL = "https://github.com/OliOli2013/SimpleIPTV_EPG"
+REMOTE_VERSION_URL = "https://raw.githubusercontent.com/OliOli2013/SimpleIPTV_EPG/main/version"
+REMOTE_INSTALLER_URL = "https://raw.githubusercontent.com/OliOli2013/SimpleIPTV_EPG/main/installer.sh"
+PACKAGE_NAME = "enigma2-plugin-extensions-simpleiptvepg"
+
+TMP_DIR = "/tmp/simpleiptvepg"
+LOG_FILE = "/tmp/simpleiptvepg.log"
+STATE_FILE = "/etc/enigma2/simpleiptvepg_state.json"
+MAPPING_FILE = "/etc/enigma2/simpleiptvepg_mapping.json"
+OVERRIDES_FILE = "/etc/enigma2/simpleiptvepg_overrides.json"
+REPORT_FILE = "/etc/enigma2/simpleiptvepg_report.json"
+
+AIO_BG = "#0B0F14"
+AIO_PANEL = "#121824"
+AIO_CYAN = "#00C2FF"
+AIO_TEXT = "#D7DEE9"
+AIO_MUTED = "#8A94A6"
+AIO_SUBTLE = "#A9B4C2"
+AIO_DIVIDER = "#203346"
+AIO_YELLOW = "#FFD200"

@@ -96,7 +96,7 @@ def compact_name(text):
 
 
 def tokenize(text):
-    return [token for token in simplify_name(text).split() if len(token) >= 2]
+    return [token for token in simplify_name(text).split() if len(token) >= 2 or token.isdigit()]
 
 
 def name_variants(text):
@@ -613,7 +613,7 @@ def _import_events_main(payload_by_ref):
             if hasattr(cache, "importEvents"):
                 # Enigma2's importEvents expects a sequence of service references.
                 # Passing a bare string can cause a failed or invisible import.
-                cache.importEvents((to_text(service_ref),), tuple(cleaned))
+                cache.importEvents([to_text(service_ref)], tuple(cleaned))
             elif hasattr(cache, "importEvent"):
                 cache.importEvent(to_text(service_ref), tuple(cleaned))
             else:
