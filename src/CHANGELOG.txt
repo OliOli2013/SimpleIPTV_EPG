@@ -1,26 +1,33 @@
-Simple IPTV EPG - 3.1.0-r1 (09.10.2026)
-======================================
-PL
-- Poprawiono wywołanie eEPGCache.importEvents: lista referencji zamiast pojedynczego stringa.
-- Dodano automatyczne wykrywanie źródeł BouquetMakerXtream z /etc/epgimport.
-- Dodano odczyt oryginalnego mapowania XMLTV ID → rzeczywista referencja IPTV.
-- Zachowano zgodność referencji dla różnych silników (4097 / 5001 / 5002).
-- Zapobiegnięto nadpisywaniu mapowania BMX błędnym dopasowaniem po nazwie.
-- Dodano rozpoznawanie kompresji GZIP niezależnie od rozszerzenia URL.
-- Poprawiono ograniczenie zużycia pamięci przy odczycie dużych XMLTV.
-- Dodano diagnostykę BMX i weryfikację widoczności EPG na próbce usług.
-- Dodano ochronę przed ujawnianiem danych dostawcy w logach.
-- Zabezpieczono aktualizator przed niezamierzonym cofnięciem wersji.
-- Zachowano nazwę pakietu, konfigurację użytkownika i ścieżkę AIO Panel.
+Simple IPTV EPG 3.2.0 RC5 AUTO (29.10.2026) — wersja testowa
+==============================================================
 
-EN
-- Fixed eEPGCache.importEvents invocation: sequence of service refs, not a bare string.
-- Added BouquetMakerXtream sources.xml discovery and channel-id mapping.
-- Supports IPTV service-type differences while preserving original bouquet refs.
-- Native BMX ID mappings take precedence over fuzzy service-name matches.
-- Detects compressed XMLTV by magic bytes, even for PHP endpoint URLs.
-- Bounded XMLTV memory usage, new diagnostics and on-device EPG visibility sampling.
-- Redacts provider credentials; protects the updater against downgrades.
-- Preserves AIO Panel package ID, settings, paths and project branding.
+PL — zmiany w serii 3.2.0 RC1–RC5
+- Naprawiono przekazywanie referencji do eEPGCache.importEvents() (lista zamiast jednoelementowej krotki).
+- Naprawiono trwały zapis ustawień Enigma2 i komunikowanie błędu zapisu.
+- Dodano uzupełnianie EPG z wielu źródeł XMLTV, w tym EPG.OVH, EPGShare, PolishTeam, iptv-epg.org i EPG.PW.
+- Dodano EPG Autopilot — ograniczony wybór przewodników regionalnych według oznaczeń kraju przy kanałach IPTV.
+- Dodano raport source_coverage i epg_autopilot oraz kontrolę widoczności EPG na próbce referencji.
+- Zaostrzono kontrolę zgodności nazw, aliasów XMLTV i ochronę przed kolizjami referencji IPTV/SAT.
+- Dodano deduplikację referencji różniących się wielkością liter w ich nagłówku DVB (bez modyfikacji URL).
+- Dodano wyszukiwanie i uzupełnianie piconów IPTV, również w osobnym zadaniu.
+- Uproszczono ekran główny do trzech ustawień i zachowano pełny zestaw opcji w ustawieniach zaawansowanych.
+- Kopiowanie EPG SAT do IPTV pozostaje opcjonalne, domyślnie wyłączone na nowych instalacjach.
+- Zachowano nazwę pakietu, ścieżkę instalacyjną i obsługę Python 2 / Python 3 w kodzie.
 
-NOTE: Tested offline with synthetic IPTV/XMLTV fixtures. Test on Enigma2 tuner before production rollout.
+EN — 3.2.0 RC5 AUTO (testing)
+- Fixed Enigma2 eEPGCache.importEvents service-reference argument and persistent configuration saving.
+- Added guarded XMLTV multi-source fallback and limited country-based feed selection.
+- Improved channel-name/alias matching, invalid/colliding IPTV reference filtering and reference de-duplication.
+- Added IPTV picon completion, coverage reports and per-source diagnostics.
+- Simplified everyday UI while preserving advanced settings.
+- Kept SAT EPG cloning optional and off by default for new installations.
+
+IMPORTANT: RC5 is a release candidate, not a stable release. Real-world EPG coverage depends on the provider, IPTV references and availability of suitable XMLTV channel IDs. Validate channel schedules on a receiver before public release.
+
+---
+
+Simple IPTV EPG 3.1.0-r1 (09.10.2026)
+===================================
+- Dodano wykrywanie źródeł BouquetMakerXtream, XMLTV ID i mapowania channels.xml.
+- Dodano obsługę źródeł XMLTV/XMLTV.GZ i diagnostykę importu.
+- Wprowadzono mechanizmy ochrony danych dostawców oraz obsługę Enigma2 Python 2/3.

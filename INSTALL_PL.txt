@@ -1,8 +1,27 @@
-Simple IPTV EPG 3.1.0-r1
+Simple IPTV EPG 3.2.0 RC5 AUTO — instrukcja instalacji
+======================================================
+Wersja RC5 jest testowa. Przed instalacją zachowaj kopię konfiguracji tunera.
 
-1. Zainstaluj do testów załączony pakiet IPK.
-2. Po testach zaktualizuj istniejące repozytorium SimpleIPTV_EPG: wypakuj ZIP na bieżący checkout, zastępując zawartość katalogu src oraz pliki README.md, CHANGELOG.txt, version i installer.sh.
-3. Wykonaj commit/push przez GitKraken. Bez tego AIO Panel nadal pobierze starszy kod z main.
-4. Po potwierdzeniu testu na tunerze używaj aktualizacji z AIO Panel.
+1. Instalator z GitHub na tunerze Enigma2:
+   wget -O /tmp/simpleiptvepg_installer.sh https://raw.githubusercontent.com/OliOli2013/SimpleIPTV_EPG/main/installer.sh
+   sh /tmp/simpleiptvepg_installer.sh
 
-WAŻNE: Nie wgrywaj do publicznego repo plików .sources.xml/.channels.xml zawierających dane dostawcy.
+   Wymagania: działająca sieć, Enigma2, unzip oraz wget albo curl.
+   Instalator korzysta z katalogu src/ repozytorium.
+
+2. Alternatywnie: skopiuj posiadany pakiet
+   enigma2-plugin-extensions-simpleiptvepg_3.2.0-rc5-auto_all.ipk
+   do /tmp/ i zainstaluj na obrazach korzystających z opkg:
+   opkg install /tmp/enigma2-plugin-extensions-simpleiptvepg_3.2.0-rc5-auto_all.ipk
+
+3. Zrestartuj GUI Enigma2.
+4. Nowa instalacja: AUTO AIO Polska, import co 24h, uzupełnianie piconów TAK.
+5. Po aktualizacji sprawdź stare ustawienia: kopiowanie SAT→IPTV oraz preferowanie SAT powinny być wyłączone do testów XMLTV.
+6. Niebieski → Narzędzia → Wymuś pełny import + nowe mapowanie.
+7. Po zakończeniu skontroluj konkretne ramówki; raport:
+   /etc/enigma2/simpleiptvepg_report.json
+   Log: /tmp/simpleiptvepg.log
+
+README.md na GitHubie opisuje funkcje i ograniczenia RC5.
+GitHub Releases może nadal udostępniać 3.1.0-r1; nie zakładaj istnienia osobnego wydania RC5.
+Nie publikuj plików dostawcy zawierających dane uwierzytelniające.
