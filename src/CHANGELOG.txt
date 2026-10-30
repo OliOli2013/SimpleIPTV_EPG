@@ -1,33 +1,51 @@
-Simple IPTV EPG 3.2.0 RC5 AUTO (29.10.2026) — wersja testowa
-==============================================================
+Simple IPTV EPG 3.2.6 RC11.1 — menu cleanup (30.10.2026)
+- Usunięto opcję „Usuń picony zastępcze RC8 (tylko nasze)” z menu Narzędzia.
+- Pozostałe funkcje importu EPG i pobierania prawdziwych piconów bez zmian.
+- Brak automatycznego usuwania lub modyfikowania zapisanych piconów.
 
-PL — zmiany w serii 3.2.0 RC1–RC5
-- Naprawiono przekazywanie referencji do eEPGCache.importEvents() (lista zamiast jednoelementowej krotki).
-- Naprawiono trwały zapis ustawień Enigma2 i komunikowanie błędu zapisu.
-- Dodano uzupełnianie EPG z wielu źródeł XMLTV, w tym EPG.OVH, EPGShare, PolishTeam, iptv-epg.org i EPG.PW.
-- Dodano EPG Autopilot — ograniczony wybór przewodników regionalnych według oznaczeń kraju przy kanałach IPTV.
-- Dodano raport source_coverage i epg_autopilot oraz kontrolę widoczności EPG na próbce referencji.
-- Zaostrzono kontrolę zgodności nazw, aliasów XMLTV i ochronę przed kolizjami referencji IPTV/SAT.
-- Dodano deduplikację referencji różniących się wielkością liter w ich nagłówku DVB (bez modyfikacji URL).
-- Dodano wyszukiwanie i uzupełnianie piconów IPTV, również w osobnym zadaniu.
-- Uproszczono ekran główny do trzech ustawień i zachowano pełny zestaw opcji w ustawieniach zaawansowanych.
-- Kopiowanie EPG SAT do IPTV pozostaje opcjonalne, domyślnie wyłączone na nowych instalacjach.
-- Zachowano nazwę pakietu, ścieżkę instalacyjną i obsługę Python 2 / Python 3 w kodzie.
+Simple IPTV EPG 3.2.6 RC11 — reference reconciliation (test build)
+- Rozdzielono referencje odczytywane z plików bukietów i pamięci Enigma2.
+- Ponowne kodowanie URL lub inne pola DVB tego samego strumienia nie tworzą dodatkowego kanału w imporcie.
+- Utrzymano odrębne źródła o różnych URL, nawet jeśli mają tę samą nazwę.
+- Raport zawiera liczby: pliki/pamięć/scalone warianty/rozbieżne DVB.
+- Przypomnienie o restarcie GUI przy rozbieżności po naprawie list.
+- Bez zmian w mechanizmie pobierania prawdziwych piconów i źródłach RC10.
+- Nie modyfikuje automatycznie żadnego bukietu ani EPG satelitarnego.
 
-EN — 3.2.0 RC5 AUTO (testing)
-- Fixed Enigma2 eEPGCache.importEvents service-reference argument and persistent configuration saving.
-- Added guarded XMLTV multi-source fallback and limited country-based feed selection.
-- Improved channel-name/alias matching, invalid/colliding IPTV reference filtering and reference de-duplication.
-- Added IPTV picon completion, coverage reports and per-source diagnostics.
-- Simplified everyday UI while preserving advanced settings.
-- Kept SAT EPG cloning optional and off by default for new installations.
+Simple IPTV EPG 3.2.5 RC10 FULL XMLTV (30.10.2026)
+- Pełny globalny przewodnik EPG.PW jako ostatnie, dodatkowe źródło w profilach AUTO.
+- Mniejszy koszt mapowania dużych XMLTV: indeks kanałów bez skanowania 1,3 mln programme.
+- Szybka kontrola zgodności nazw bez wielokrotnego odczytywania wszystkich programów.
+- Minimalna wolna przestrzeń 90 MiB w /tmp przed próbą pełnego przewodnika.
+- Picony bez tekstowych atrap (bez zmian względem RC9).
+- Nadal nie edytuje bukietów podczas zwykłego importu.
+- Duży plik XMLTV może wydłużyć pobieranie; model źródeł nie gwarantuje ramówki dla każdej stacji.
 
-IMPORTANT: RC5 is a release candidate, not a stable release. Real-world EPG coverage depends on the provider, IPTV references and availability of suitable XMLTV channel IDs. Validate channel schedules on a receiver before public release.
+Simple IPTV EPG 3.2.4 RC9 REAL PICONS (30.10.2026)
+- Nie tworzy atrap z napisem zamiast piconów.
+- Wykrywa istniejące atrapy RC8 i pozwala je zastąpić prawdziwymi logo.
+- Narzędzia: opcjonalne czyszczenie wyłącznie atrap oznaczonych przez RC8.
+- Rozszerzona próbka diagnostyczna EPG (maksymalnie 64 referencje).
+- Nie usuwa automatycznie piconów użytkownika ani piconów SAT.
 
----
+Simple IPTV EPG 3.2.3 RC8 VISIBLE IPTV (30.10.2026)
+- Poprawa dokładności XMLTV na podstawie jednoznacznych aliasów i tagów regionalnych.
+- Jedno EPG ID może zasilać kilka wariantów tej samej stacji IPTV.
+- Picony: autentyczne logo albo podpisany picon zastępczy (limit 450 plików/przebieg).
+- Opcjonalna naprawa niepoprawnych referencji IPTV z backupem i wymaganym restartem GUI.
+- Dodatkowe liczniki pokrycia i lista kanałów z EPG w diagnostyce.
+- Dla nowych instalacji domyślne kopiowanie EPG SAT -> IPTV (bez naruszenia SAT).
 
-Simple IPTV EPG 3.1.0-r1 (09.10.2026)
-===================================
-- Dodano wykrywanie źródeł BouquetMakerXtream, XMLTV ID i mapowania channels.xml.
-- Dodano obsługę źródeł XMLTV/XMLTV.GZ i diagnostykę importu.
-- Wprowadzono mechanizmy ochrony danych dostawców oraz obsługę Enigma2 Python 2/3.
+Simple IPTV EPG 3.2.2 RC7 STATUS / COVERAGE (30.10.2026)
+- Język PL/EN: automatyczny i ręczny wybór.
+- Status pobierania, mapowania oraz importu po ponownym otwarciu interfejsu.
+- Praca w tle po zamknięciu okna (bez restartu GUI Enigma2).
+- Dodatkowe regionalne źródła XMLTV, w tym dla globalnego EPG.PW.
+- Picony IPTV: limit 320 nowych plików, kontrola wolnego miejsca.
+- Zabezpieczenia EPG SAT i bukietów pozostają włączone.
+
+Simple IPTV EPG 3.2.1 RC6 PL/EN + COUNTRY EPG (30.10.2026)
+- Ustawienie języka PL/EN, dopasowanie wielu oznaczeń kraju, diagnostyka pokrycia XMLTV.
+- Regionalne źródła i ostrożna identyfikacja XMLTV ID.
+
+History RC5

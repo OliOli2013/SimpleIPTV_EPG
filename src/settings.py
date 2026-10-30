@@ -12,18 +12,19 @@ from .sources import source_choices
 def get_lang():
     try:
         code = language.getLanguage() or ""
-        return "pl" if "pl" in code.lower() else "en"
+        return "pl" if code.lower().replace("-", "_").split("_", 1)[0] == "pl" else "en"
     except Exception:
         return "en"
 
 
-LANG = get_lang()
 
 if not hasattr(config.plugins, "SimpleIPTV_EPG"):
     config.plugins.SimpleIPTV_EPG = ConfigSubsection()
 
 cfg = config.plugins.SimpleIPTV_EPG
-cfg.source_select = ConfigSelection(default="AUTO_AIO", choices=source_choices(LANG))
+cfg.ui_language = ConfigSelection(default="auto", choices=[
+    ("auto", "Automatycznie / Automatic"), ("pl", "Polski"), ("en", "English")])
+cfg.source_select = ConfigSelection(default="AUTO_AIO", choices=source_choices(cfg.ui_language.value if cfg.ui_language.value in ('pl', 'en') else get_lang()))
 cfg.custom_url = ConfigText(default="https://", fixed_size=False, visible_width=80)
 cfg.auto_interval = ConfigSelection(default="24", choices=[
     ("0", "Wyłączony / Off"), ("6", "6 h"), ("12", "12 h"), ("24", "24 h"), ("48", "48 h"),
@@ -32,7 +33,7 @@ cfg.import_days = ConfigSelection(default="5", choices=[("2", "2"), ("3", "3"), 
 cfg.fill_missing = ConfigYesNo(default=True)
 cfg.picons_enabled = ConfigYesNo(default=True)
 cfg.picons_online = ConfigYesNo(default=True)
-cfg.clone_sat = ConfigYesNo(default=False)
+cfg.clone_sat = ConfigYesNo(default=True)
 cfg.prefer_sat = ConfigYesNo(default=False)
 cfg.mapping_sensitivity = ConfigSelection(default="balanced", choices=[
     ("strict", "Ścisłe / Strict"), ("balanced", "Zbalansowane / Balanced"), ("flexible", "Elastyczne / Flexible"),
@@ -41,6 +42,18 @@ cfg.notify_done = ConfigYesNo(default=True)
 cfg.save_epg_cache = ConfigYesNo(default=True)
 cfg.keep_xml_cache = ConfigYesNo(default=False)
 cfg.boot_delay = ConfigSelection(default="120", choices=[("60", "60 s"), ("120", "120 s"), ("300", "300 s")])
+
+
+def effective_lang():
+    mode = getattr(cfg.ui_language, 'value', 'auto')
+    return mode if mode in ('pl', 'en') else get_lang()
+
+
+def refresh_language_choices():
+    try:
+        cfg.source_select.setChoices(source_choices(effective_lang()), default=cfg.source_select.value)
+    except Exception:
+        pass
 
 
 def save_config():
@@ -55,6 +68,7 @@ def save_config():
 
 TR = {
     "title": {"pl": "Simple IPTV EPG", "en": "Simple IPTV EPG"},
+    "ui_language": {"pl": "Język interfejsu", "en": "Interface language"},
     "source": {"pl": "Źródło EPG", "en": "EPG source"},
     "custom": {"pl": "Własny URL XML/XML.GZ", "en": "Custom XML/XML.GZ URL"},
     "interval": {"pl": "Automatyczny import", "en": "Automatic import"},
@@ -76,4 +90,4 @@ TR = {
 
 def tr(key):
     item = TR.get(key, {})
-    return item.get(LANG, item.get("en", key))
+    return item.get(effective_lang(), item.get("en", key))

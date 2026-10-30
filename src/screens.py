@@ -16,6 +16,7 @@ from Screens.ChoiceBox import ChoiceBox
 from Screens.MessageBox import MessageBox
 from Screens.Screen import Screen
 from twisted.internet import reactor
+from enigma import eTimer
 
 from .compat import io_open, to_text
 from .constants import (
@@ -26,9 +27,10 @@ from .constants import (
 )
 from .epgimport_bridge import discover_bmx_sources
 from .logger import clear_log, log_message
-from .settings import cfg, save_config, tr
+from .settings import cfg, save_config, tr, refresh_language_choices
 from .storage import load_json, load_state
 from .worker import GLOBAL_WORKER
+from .i18n import T, T_log, lang
 
 PLUGIN_PATH = os.path.dirname(os.path.abspath(__file__))
 ACTIVE_SESSION = None
@@ -148,15 +150,15 @@ class SimpleIPTVEPGMain(Screen, ConfigListScreen):
         self.list = []
         ConfigListScreen.__init__(self, self.list, session=session)
         self["title"] = Label("%s  %s %s" % (PLUGIN_TITLE, PLUGIN_VERSION, PLUGIN_BUILD))
-        self["subtitle"] = Label("Ustawienia zaawansowane • OK zapisuje" if self.advanced else "AUTO EPG • prosta konfiguracja • Narzędzia: zaawansowane")
+        self["subtitle"] = Label(T("Ustawienia zaawansowane • OK zapisuje") if self.advanced else T("AUTO EPG • prosta konfiguracja • Narzędzia: zaawansowane"))
         self["pp_logo"] = Pixmap()
         self["project_qr"] = Pixmap()
         self["status_title"] = Label("STATUS")
         self["status"] = ScrollLabel("")
-        self["key_red"] = Label("ZAMKNIJ")
-        self["key_green"] = Label("ZAPISZ" if self.advanced else "IMPORTUJ EPG")
-        self["key_yellow"] = Label("WRÓĆ" if self.advanced else "TEST ŹRÓDŁA")
-        self["key_blue"] = Label("WRÓĆ" if self.advanced else "NARZĘDZIA")
+        self["key_red"] = Label(T("ZAMKNIJ"))
+        self["key_green"] = Label(T("ZAPISZ") if self.advanced else T("IMPORTUJ EPG"))
+        self["key_yellow"] = Label(T("WRÓĆ") if self.advanced else T("TEST ŹRÓDŁA"))
+        self["key_blue"] = Label(T("WRÓĆ") if self.advanced else T("NARZĘDZIA"))
         self["footer"] = Label(_footer_text())
         self["actions"] = ActionMap(
             ["SetupActions", "ColorActions", "DirectionActions", "MenuActions", "InfobarEPGActions"],
@@ -174,21 +176,71 @@ class SimpleIPTVEPGMain(Screen, ConfigListScreen):
                 "ok": self.key_save,
             }, -2)
         self.onClose.append(self._on_close)
+        self._seen_worker_seq = -1
+        self._live_timer = eTimer()
+        try:
+            self._live_timer.callback.append(self._poll_worker)
+        except AttributeError:
+            self._live_timer_connection = self._live_timer.timeout.connect(self._poll_worker)
         self._rebuild_config()
         self._refresh_summary()
         if GLOBAL_WORKER.running:
-            self._append("Trwa zadanie: %s" % (GLOBAL_WORKER.task_name or "EPG"))
+            self._append(T("Trwa zadanie: %s") % (GLOBAL_WORKER.task_name or "EPG"))
+            if GLOBAL_WORKER.last_progress:
+                self._append(GLOBAL_WORKER.last_progress)
         else:
             self._append(tr("ready"))
+        self._poll_worker()
+        self._live_timer.start(1300, False)
+
+    def _poll_worker(self):
+        # The worker survives closing/reopening the plugin GUI.
+        # Rehydrate activity from the global worker, never from a stale Screen callback.
+        if self.closed:
+            return
+        try:
+            snapshot = GLOBAL_WORKER.progress_snapshot()
+            seq = snapshot.get('seq', 0)
+            if snapshot.get('running') and self._seen_worker_seq != seq:
+                lines = [T_log(line) for line in snapshot.get('lines', [])]
+                if not lines:
+                    lines = [T("Pobieranie i mapowanie EPG trwa w tle.")]
+                self['status'].setText(T("Możesz zamknąć wtyczkę. Import i picony będą działały w tle.\n") +
+                                       '\n'.join(lines[-10:]))
+                self['status'].lastPage()
+                self['status_title'].setText(T("PRACA W TOKU: %s") % (snapshot.get('task') or 'EPG'))
+                self._seen_worker_seq = seq
+            elif not snapshot.get('running') and self._seen_worker_seq != seq:
+                self._seen_worker_seq = seq
+                self._refresh_summary()
+                if snapshot.get('lines'):
+                    self['status'].setText('\n'.join(T_log(line) for line in snapshot['lines'][-8:]))
+        finally:
+            if not self.closed:
+                self._live_timer.start(1300, False)
+
+    def _render_language(self):
+        self["subtitle"].setText(T("Ustawienia zaawansowane • OK zapisuje") if self.advanced else
+                                 T("AUTO EPG • prosta konfiguracja • Narzędzia: zaawansowane"))
+        self["key_red"].setText(T("ZAMKNIJ"))
+        self["key_green"].setText(T("ZAPISZ") if self.advanced else T("IMPORTUJ EPG"))
+        self["key_yellow"].setText(T("WRÓĆ") if self.advanced else T("TEST ŹRÓDŁA"))
+        self["key_blue"].setText(T("WRÓĆ") if self.advanced else T("NARZĘDZIA"))
+        self._refresh_summary()
 
     def _on_close(self):
         self.closed = True
+        try:
+            self._live_timer.stop()
+        except Exception:
+            pass
 
     def _rebuild_config(self):
         # Ordinary users see three safe settings; no option is removed.
         entries = [getConfigListEntry(tr("source"), cfg.source_select),
                    getConfigListEntry(tr("interval"), cfg.auto_interval),
-                   getConfigListEntry(tr("picons_enabled"), cfg.picons_enabled)]
+                   getConfigListEntry(tr("picons_enabled"), cfg.picons_enabled),
+                   getConfigListEntry(tr("ui_language"), cfg.ui_language)]
         if self.advanced:
             if cfg.source_select.value == "CUSTOM":
                 entries.append(getConfigListEntry(tr("custom"), cfg.custom_url))
@@ -214,13 +266,13 @@ class SimpleIPTVEPGMain(Screen, ConfigListScreen):
     def _refresh_summary(self):
         state = load_state()
         if GLOBAL_WORKER.running:
-            title = "PRACA W TOKU: %s" % (GLOBAL_WORKER.task_name or "EPG")
+            title = T("PRACA W TOKU: %s") % (GLOBAL_WORKER.task_name or "EPG")
         else:
-            title = "STATUS • ostatni udany import: %s" % _fmt_time(state.get("last_success"))
+            title = T("STATUS • ostatni udany import: %s") % _fmt_time(state.get("last_success"))
         self["status_title"].setText(title)
         if not self.log_lines:
             summary = (
-                "Źródło: %s\nIPTV: %s | SAT: %s | XMLTV kanały: %s | zdarzenia: %s | błędy importu: %s"
+                T("Źródło: %s\nIPTV: %s | SAT: %s | XMLTV kanały: %s | zdarzenia: %s | błędy importu: %s")
                 % (state.get("last_source") or "—", state.get("last_iptv", "—"), state.get("last_sat", "—"),
                    state.get("last_xml_channels", "—"), state.get("last_xml_events", "—"), state.get("last_inject_errors", "—")))
             self["status"].setText(summary)
@@ -229,7 +281,7 @@ class SimpleIPTVEPGMain(Screen, ConfigListScreen):
         text = to_text(message or "").strip()
         if not text:
             return
-        self.log_lines.append(text)
+        self.log_lines.append(T_log(text))
         self.log_lines = self.log_lines[-80:]
         if not self.closed:
             self["status"].setText("\n".join(self.log_lines))
@@ -240,7 +292,7 @@ class SimpleIPTVEPGMain(Screen, ConfigListScreen):
 
     def _busy(self):
         if GLOBAL_WORKER.running:
-            self.session.open(MessageBox, "Inne zadanie już trwa: %s" % (GLOBAL_WORKER.task_name or "EPG"), MessageBox.TYPE_INFO, timeout=5)
+            self.session.open(MessageBox, T("Inne zadanie już trwa: %s") % (GLOBAL_WORKER.task_name or "EPG"), MessageBox.TYPE_INFO, timeout=5)
             return True
         return False
 
@@ -263,33 +315,45 @@ class SimpleIPTVEPGMain(Screen, ConfigListScreen):
             self.key_tools()
 
     def key_left(self):
-        old = cfg.source_select.value
+        old = (cfg.source_select.value, cfg.ui_language.value)
         ConfigListScreen.keyLeft(self)
-        if old != cfg.source_select.value:
+        if old[1] != cfg.ui_language.value:
+            refresh_language_choices()
+            self._render_language()
+            error = save_config()
+            if error:
+                self._append(T("Błąd zapisu ustawień: %s") % error)
+        if old != (cfg.source_select.value, cfg.ui_language.value):
             self._rebuild_config()
 
     def key_right(self):
-        old = cfg.source_select.value
+        old = (cfg.source_select.value, cfg.ui_language.value)
         ConfigListScreen.keyRight(self)
-        if old != cfg.source_select.value:
+        if old[1] != cfg.ui_language.value:
+            refresh_language_choices()
+            self._render_language()
+            error = save_config()
+            if error:
+                self._append(T("Błąd zapisu ustawień: %s") % error)
+        if old != (cfg.source_select.value, cfg.ui_language.value):
             self._rebuild_config()
 
     def key_save(self):
         error = save_config()
         if error:
-            self.session.open(MessageBox, "Blad zapisu ustawien: %s" % error, MessageBox.TYPE_ERROR, timeout=9)
+            self.session.open(MessageBox, T("Błąd zapisu ustawień: %s") % error, MessageBox.TYPE_ERROR, timeout=9)
         else:
-            self._append("Ustawienia zapisane do /etc/enigma2/settings.")
+            self._append(T("Ustawienia zapisane do /etc/enigma2/settings."))
 
     def key_close(self):
         error = save_config()
         if error:
-            self.session.open(MessageBox, "Blad zapisu ustawien: %s" % error, MessageBox.TYPE_ERROR, timeout=9)
+            self.session.open(MessageBox, T("Błąd zapisu ustawień: %s") % error, MessageBox.TYPE_ERROR, timeout=9)
             return
         if GLOBAL_WORKER.running:
             self.session.openWithCallback(
                 self._close_after_background_info, MessageBox,
-                "Zadanie działa w tle. Zamknięcie okna NIE zatrzyma importu.\n\nZamknąć okno?",
+                T("Zadanie działa w tle. Zamknięcie okna NIE zatrzyma importu.\n\nZamknąć okno?"),
                 MessageBox.TYPE_YESNO)
         else:
             self.close()
@@ -301,38 +365,40 @@ class SimpleIPTVEPGMain(Screen, ConfigListScreen):
     def key_import(self, force=False):
         error = save_config()
         if error:
-            self.session.open(MessageBox, "Blad zapisu ustawien: %s" % error, MessageBox.TYPE_ERROR, timeout=9)
+            self.session.open(MessageBox, T("Błąd zapisu ustawień: %s") % error, MessageBox.TYPE_ERROR, timeout=9)
             return
         if self._busy():
             return
         self.log_lines = []
-        self._append("Start importu EPG...")
+        self._append(T("Start importu EPG..."))
         ok = GLOBAL_WORKER.start_import(self._worker_log, self._done_import, silent=False, force_mapping=bool(force))
         if ok:
             self._refresh_summary()
+            self._append(T("Możesz zamknąć wtyczkę. Import i picony będą działały w tle."))
+            self.session.open(MessageBox, T("Import rozpoczęty. Możesz zamknąć wtyczkę i oglądać TV.\nPobieranie EPG i piconów będzie kontynuowane w tle.\nNie restartuj GUI Enigma2 do zakończenia."), MessageBox.TYPE_INFO, timeout=8)
 
     def _done_import(self, ok, result, silent):
         self._refresh_summary()
         if self.closed:
             if cfg.notify_done.value and ACTIVE_SESSION is not None:
-                ACTIVE_SESSION.open(MessageBox, "Import EPG zakończony poprawnie." if ok else "Import EPG zakończył się błędem: %s" % result.get("error", "nieznany błąd"), MessageBox.TYPE_INFO, timeout=8)
+                ACTIVE_SESSION.open(MessageBox, T("Import EPG zakończony poprawnie.") if ok else T("Import EPG zakończył się błędem: %s") % result.get("error", T("nieznany błąd")), MessageBox.TYPE_INFO, timeout=8)
             return
         if ok:
-            msg = "Import zakończony. SAT: %s kanałów | XMLTV: %s kanałów / %s zdarzeń." % (
+            msg = T("Import zakończony. SAT: %s kanałów | XMLTV: %s kanałów / %s zdarzeń.") % (
                 result.get("sat_channels", 0), result.get("xml_service_refs", 0), result.get("xml_events", 0))
         else:
-            msg = "Import nie powiódł się: %s" % result.get("error", "sprawdź log")
+            msg = T("Import nie powiódł się: %s") % result.get("error", T("sprawdź log"))
         self.session.open(MessageBox, msg, MessageBox.TYPE_INFO, timeout=9)
 
     def key_probe(self):
         error = save_config()
         if error:
-            self.session.open(MessageBox, "Blad zapisu ustawien: %s" % error, MessageBox.TYPE_ERROR, timeout=9)
+            self.session.open(MessageBox, T("Błąd zapisu ustawień: %s") % error, MessageBox.TYPE_ERROR, timeout=9)
             return
         if self._busy():
             return
         self.log_lines = []
-        self._append("Testowanie źródła EPG...")
+        self._append(T("Testowanie źródła EPG..."))
         GLOBAL_WORKER.start_probe(self._worker_log, self._done_probe)
 
     def _done_probe(self, ok, result, silent):
@@ -341,9 +407,9 @@ class SimpleIPTVEPGMain(Screen, ConfigListScreen):
         items = result.get("sources", [])
         if items:
             last = items[-1]
-            msg = ("Źródło działa. Opóźnienie: %sms" % last.get("latency_ms", "—")) if ok else ("Źródło nie działa: %s" % last.get("message", "błąd"))
+            msg = (T("Źródło działa. Opóźnienie: %sms") % last.get("latency_ms", "—")) if ok else (T("Źródło nie działa: %s") % last.get("message", T("błąd")))
         else:
-            msg = "Nie udało się wykonać testu źródła."
+            msg = T("Nie udało się wykonać testu źródła.")
         self.session.open(MessageBox, msg, MessageBox.TYPE_INFO, timeout=8)
 
     def key_tools(self):
@@ -351,19 +417,21 @@ class SimpleIPTVEPGMain(Screen, ConfigListScreen):
             self.key_close()
             return
         choices = [
-            ("Ustawienia zaawansowane", "advanced"),
-            ("Wymuś pełny import + nowe mapowanie", "force_import"),
-            ("Zbuduj mapowanie bez importu", "mapping"),
-            ("Uzupełnij picony IPTV (bez EPG)", "picons"),
-            ("Diagnostyka", "diag"),
-            ("Pokaż log", "log"),
-            ("Sprawdź aktualizację", "check_update"),
-            ("Aktualizuj wtyczkę", "update"),
-            ("Wyczyść cache mapowania", "clear_map"),
-            ("Wyczyść pliki tymczasowe", "clear_tmp"),
-            ("Informacje o projekcie / QR", "project"),
+            (T("Ustawienia zaawansowane"), "advanced"),
+            (T("Język interfejsu: Automatycznie / Polski / English"), "language"),
+            (T("Wymuś pełny import + nowe mapowanie"), "force_import"),
+            (T("Zbuduj mapowanie bez importu"), "mapping"),
+            (T("Uzupełnij prawdziwe picony IPTV (bez atrap)"), "picons"),
+            (T("Napraw błędne referencje IPTV (kopie bezpieczeństwa)"), "repair_refs"),
+            (T("Diagnostyka"), "diag"),
+            (T("Pokaż log"), "log"),
+            (T("Sprawdź aktualizację"), "check_update"),
+            (T("Aktualizuj wtyczkę"), "update"),
+            (T("Wyczyść cache mapowania"), "clear_map"),
+            (T("Wyczyść pliki tymczasowe"), "clear_tmp"),
+            (T("Informacje o projekcie / QR"), "project"),
         ]
-        self.session.openWithCallback(self._tool_selected, ChoiceBox, title="Simple IPTV EPG • Narzędzia", list=choices)
+        self.session.openWithCallback(self._tool_selected, ChoiceBox, title=T("Simple IPTV EPG • Narzędzia"), list=choices)
 
     def _tool_selected(self, selected):
         if not selected:
@@ -371,12 +439,21 @@ class SimpleIPTVEPGMain(Screen, ConfigListScreen):
         action = selected[1]
         if action == "advanced":
             self.session.open(SimpleIPTVEPGMain, True)
+        elif action == "language":
+            items = [(T("Automatycznie (język Enigma2)"), "auto"),
+                     (T("Polski"), "pl"), ("English", "en")]
+            self.session.openWithCallback(self._language_selected, ChoiceBox,
+                                          title=T("Język interfejsu"), list=items)
         elif action == "force_import":
             self.key_import(force=True)
         elif action == "picons":
             if not self._busy():
                 self.log_lines = []
                 GLOBAL_WORKER.start_picons(self._worker_log, self._done_picons)
+        elif action == "repair_refs":
+            self._refs_preview()
+        elif action == "cleanup_picons":
+            self._cleanup_picons_preview()
         elif action == "mapping":
             if not self._busy():
                 self.log_lines = []
@@ -392,43 +469,123 @@ class SimpleIPTVEPGMain(Screen, ConfigListScreen):
         elif action == "update":
             if not self._busy():
                 self.session.openWithCallback(self._confirm_update, MessageBox,
-                    "Aktualizacja pobierze pakiet z oficjalnego repozytorium projektu i zainstaluje go. Kontynuować?",
+                    T("Aktualizacja pobierze pakiet z oficjalnego repozytorium projektu i zainstaluje go. Kontynuować?"),
                     MessageBox.TYPE_YESNO)
         elif action == "clear_map":
             count = GLOBAL_WORKER.clear_mapping_cache()
-            self._append("Wyczyszczono cache mapowania (%s plików)." % count)
+            self._append(T("Wyczyszczono cache mapowania (%s plików).") % count)
         elif action == "clear_tmp":
             count = GLOBAL_WORKER.clear_temp()
-            self._append("Usunięto %s plików tymczasowych." % count)
+            self._append(T("Usunięto %s plików tymczasowych.") % count)
         elif action == "project":
             self.key_project()
+
+    def _cleanup_picons_preview(self):
+        if self._busy():
+            return
+        try:
+            from .picons import cleanup_placeholder_picons
+            result = cleanup_placeholder_picons(dry_run=True)
+            if not result.get('found'):
+                self.session.open(MessageBox, T("Nie znaleziono piconów zastępczych RC8."),
+                                  MessageBox.TYPE_INFO, timeout=8)
+                return
+            message = T("Znaleziono %s piconów zastępczych utworzonych przez RC8.\n"
+                        "Usunięte będą TYLKO nasze oznaczone grafiki, nie prawdziwe logotypy.\n"
+                        "Po usunięciu inne wtyczki będą mogły zapisać brakujące picony.\n\nUsunąć?") % result['found']
+            self.session.openWithCallback(self._cleanup_picons_apply, MessageBox,
+                                          message, MessageBox.TYPE_YESNO)
+        except Exception as error:
+            self.session.open(MessageBox, T("Błąd kontroli piconów: %s") % error,
+                              MessageBox.TYPE_ERROR, timeout=10)
+
+    def _cleanup_picons_apply(self, answer):
+        if not answer or self._busy():
+            return
+        try:
+            from .picons import cleanup_placeholder_picons
+            result = cleanup_placeholder_picons(dry_run=False)
+            self.session.open(MessageBox,
+                T("Usunięto %s atrap RC8. Błędy: %s. Prawdziwe picony zachowano.") % (
+                    result['removed'], result['errors']), MessageBox.TYPE_INFO, timeout=12)
+        except Exception as error:
+            self.session.open(MessageBox, T("Błąd usuwania piconów: %s") % error,
+                              MessageBox.TYPE_ERROR, timeout=10)
+
+    def _refs_preview(self):
+        if self._busy():
+            return
+        try:
+            from .refrepair import repair
+            data = repair(dry_run=True)
+            if not data.get('unique_iptv_references'):
+                self.session.open(MessageBox, T("Nie wykryto referencji IPTV wymagających naprawy."), MessageBox.TYPE_INFO, timeout=8)
+                return
+            text = T("Wykryto %s błędnych lub kolizyjnych referencji IPTV w %s bukietach.\n"
+                     "Zostanie utworzona kopia oryginalnych list. URL i nazwy kanałów zostaną zachowane.\n"
+                     "Po zmianie należy uruchomić ponownie GUI Enigma2.\n\nKontynuować?") % (
+                         data['unique_iptv_references'], data['files'])
+            self.session.openWithCallback(self._refs_apply, MessageBox, text, MessageBox.TYPE_YESNO)
+        except Exception as error:
+            self.session.open(MessageBox, T("Błąd analizy bukietów: %s") % error, MessageBox.TYPE_ERROR, timeout=12)
+
+    def _refs_apply(self, accepted):
+        if not accepted or self._busy():
+            return
+        try:
+            from .refrepair import repair
+            data = repair(dry_run=False)
+            self.session.open(MessageBox, T("Naprawiono %s referencji w %s bukietach.\nKopia: %s\n"
+                "Uruchom ponownie GUI Enigma2, a potem ponów import EPG.") % (
+                    data['unique_iptv_references'], data['files'], data.get('backup', '—')),
+                MessageBox.TYPE_INFO, timeout=20)
+        except Exception as error:
+            self.session.open(MessageBox, T("Błąd naprawy referencji IPTV: %s") % error, MessageBox.TYPE_ERROR, timeout=15)
+
+    def _language_selected(self, selected):
+        if not selected:
+            return
+        choice = selected[1]
+        if choice not in ('auto', 'pl', 'en'):
+            return
+        cfg.ui_language.value = choice
+        refresh_language_choices()
+        self._rebuild_config()
+        self._render_language()
+        error = save_config()
+        if error:
+            self.session.open(MessageBox, T("Błąd zapisu ustawień: %s") % error,
+                              MessageBox.TYPE_ERROR, timeout=8)
+        else:
+            self._append(T("Język został zapisany."))
 
     def _done_picons(self, ok, result, silent):
         if self.closed:
             return
         if ok:
-            self._append('Picony: %s nowych plików, %s usług rozpoznanych.' % (
-                result.get('created', 0), result.get('covered', 0)))
+            self._append(T('Picony: %s nowych, %s zastąpionych atrap, %s usług bez źródła logo.') % (
+                result.get('created', 0), result.get('replaced', 0),
+                result.get('missing_real_logo', 0)))
         else:
-            self._append('Błąd piconów: %s' % result.get('error', 'sprawdź log'))
+            self._append(T('Błąd piconów: %s') % result.get('error', T('sprawdź log')))
         self._refresh_summary()
 
     def _done_mapping(self, ok, result, silent):
         if self.closed:
             return
-        msg = "Mapowanie gotowe: %s/%s grup, XML ID: %s." % (
-            result.get("matched_groups", 0), result.get("groups", 0), result.get("xml_ids", 0)) if ok else "Mapowanie nie powiodło się: %s" % result.get("error", "sprawdź log")
+        msg = T("Mapowanie gotowe: %s/%s grup, XML ID: %s.") % (
+            result.get("matched_groups", 0), result.get("groups", 0), result.get("xml_ids", 0)) if ok else T("Mapowanie nie powiodło się: %s") % result.get("error", T("sprawdź log"))
         self.session.open(MessageBox, msg, MessageBox.TYPE_INFO, timeout=8)
 
     def _done_version(self, ok, result, silent):
         if self.closed:
             return
         if not ok:
-            msg = result.get("error", "Nie udało się sprawdzić wersji.")
+            msg = result.get("error", T("Nie udało się sprawdzić wersji."))
         elif result.get("newer"):
-            msg = "Dostępna jest nowsza wersja: %s (zainstalowana: %s)." % (result.get("remote"), result.get("local"))
+            msg = T("Dostępna jest nowsza wersja: %s (zainstalowana: %s).") % (result.get("remote"), result.get("local"))
         else:
-            msg = "Masz aktualną wersję: %s." % result.get("local")
+            msg = T("Masz aktualną wersję: %s.") % result.get("local")
         self.session.open(MessageBox, msg, MessageBox.TYPE_INFO, timeout=9)
 
     def _confirm_update(self, answer):
@@ -439,7 +596,7 @@ class SimpleIPTVEPGMain(Screen, ConfigListScreen):
     def _done_update(self, ok, result, silent):
         if self.closed:
             return
-        msg = result.get("message") or result.get("error") or ("Aktualizacja zakończona." if ok else "Aktualizacja nie powiodła się.")
+        msg = result.get("message") or result.get("error") or (T("Aktualizacja zakończona.") if ok else T("Aktualizacja nie powiodła się."))
         self.session.open(MessageBox, msg, MessageBox.TYPE_INFO, timeout=12)
 
     def key_project(self):
@@ -473,14 +630,14 @@ def _simple_skin(name, title, width=980, height=610):
 
 
 class DiagnosticsScreen(Screen):
-    skin = _simple_skin("SimpleIPTVEPGDiagnostics", "Diagnostyka")
+    skin = _simple_skin("SimpleIPTVEPGDiagnostics", T("Diagnostyka"))
 
     def __init__(self, session):
         Screen.__init__(self, session)
-        self["title"] = Label("Simple IPTV EPG • DIAGNOSTYKA")
+        self["title"] = Label("Simple IPTV EPG • " + T("DIAGNOSTYKA"))
         self["content"] = ScrollLabel("")
-        self["key_red"] = Label("ZAMKNIJ")
-        self["key_green"] = Label("ODŚWIEŻ")
+        self["key_red"] = Label(T("ZAMKNIJ"))
+        self["key_green"] = Label(T("ODŚWIEŻ"))
         self["footer"] = Label(_footer_text())
         self["actions"] = ActionMap(["SetupActions", "ColorActions", "DirectionActions"], {
             "cancel": self.close, "red": self.close, "green": self.refresh,
@@ -494,41 +651,45 @@ class DiagnosticsScreen(Screen):
         mapping = load_json(MAPPING_FILE, {})
         meta = mapping.get("_meta", {}) if isinstance(mapping, dict) else {}
         lines = [
-            "Wersja wtyczki: %s" % PLUGIN_VERSION,
+            T("Wersja wtyczki: %s") % PLUGIN_VERSION,
             "Python: %s.%s.%s" % sys.version_info[:3],
-            "Wybrane źródło: %s" % cfg.source_select.value,
-            "Auto-import: %s h" % (cfg.auto_interval.value if cfg.auto_interval.value != "0" else "wyłączony"),
-            "Ostatnia próba: %s" % _fmt_time(state.get("last_attempt")),
-            "Ostatni sukces: %s" % _fmt_time(state.get("last_success")),
-            "Ostatni wynik: %s" % (state.get("last_result") or "—"),
-            "Ostatni błąd: %s" % (state.get("last_error") or "—"),
-            "Ostatnie źródło: %s" % (state.get("last_source") or "—"),
-            "IPTV / SAT: %s / %s" % (state.get("last_iptv", "—"), state.get("last_sat", "—")),
-            "XMLTV kanały / zdarzenia: %s / %s" % (state.get("last_xml_channels", "—"), state.get("last_xml_events", "—")),
-            "Błędy eEPGCache: %s" % state.get("last_inject_errors", "—"),
-            "Picony IPTV: %s" % ((report.get('picons') or {}).get('created', '—') if isinstance(report, dict) else '—'),
-            "Uzupełniające źródła: %s" % (len(report.get('extra_sources') or []) if isinstance(report, dict) else '—'),
+            T("Wybrane źródło: %s") % cfg.source_select.value,
+            T("Auto-import: %s h") % (cfg.auto_interval.value if cfg.auto_interval.value != "0" else T("wyłączony")),
+            T("Ostatnia próba: %s") % _fmt_time(state.get("last_attempt")),
+            T("Ostatni sukces: %s") % _fmt_time(state.get("last_success")),
+            T("Ostatni wynik: %s") % (state.get("last_result") or "—"),
+            T("Ostatni błąd: %s") % (state.get("last_error") or "—"),
+            T("Ostatnie źródło: %s") % (state.get("last_source") or "—"),
+            T("IPTV / SAT: %s / %s") % (state.get("last_iptv", "—"), state.get("last_sat", "—")),
+            T("XMLTV kanały / zdarzenia: %s / %s") % (state.get("last_xml_channels", "—"), state.get("last_xml_events", "—")),
+            T("Błędy eEPGCache: %s") % state.get("last_inject_errors", "—"),
+            T("Picony IPTV: %s") % ((report.get('picons') or {}).get('created', '—') if isinstance(report, dict) else '—'),
+            T("Picony podpisane nazwą (zastępcze): %s") % ((report.get('picons') or {}).get('fallback', '—') if isinstance(report, dict) else '—'),
+            T("IPTV z EPG: %s z %s") % (report.get('xml_service_refs', '—'), report.get('iptv_services', '—')),
+            T("Bez typowej ramówki (oszacowanie): %s") % ((report.get('epg_autopilot') or {}).get('likely_unscheduled_heuristic', '—')),
+            T("Kanały z EPG: %s") % (', '.join((report.get('matched_channel_names') or [])[:7]) or '—'),
+            T("Uzupełniające źródła: %s") % (len(report.get('extra_sources') or []) if isinstance(report, dict) else '—'),
             "",
-            "Mapowanie BMX / EPGImport:",
-            "  pliki sources.xml: %s" % len(glob.glob("/etc/epgimport/bouquetmakerxtream*.sources.xml")),
-            "  wykryte EPG XMLTV: %s" % len(discover_bmx_sources()),
-            "  trafienia BMX: %s" % ((report.get("mapping") or {}).get("bmx_matches", "—") if isinstance(report, dict) else "—"),
+            T("Mapowanie BMX / EPGImport:"),
+            T("  pliki sources.xml: %s") % len(glob.glob("/etc/epgimport/bouquetmakerxtream*.sources.xml")),
+            T("  wykryte EPG XMLTV: %s") % len(discover_bmx_sources()),
+            T("  trafienia BMX: %s") % ((report.get("mapping") or {}).get("bmx_matches", "—") if isinstance(report, dict) else "—"),
             "",
-            "Cache mapowania:",
-            "  źródło: %s" % (meta.get("source_url") or "—"),
-            "  czułość: %s" % (meta.get("sensitivity") or "—"),
-            "  grupy / dopasowane: %s / %s" % (meta.get("groups", "—"), meta.get("matched_groups", "—")),
-            "  zapisano: %s" % _fmt_time(meta.get("saved_at")),
+            T("Cache mapowania:"),
+            T("  źródło: %s") % (meta.get("source_url") or "—"),
+            T("  czułość: %s") % (meta.get("sensitivity") or "—"),
+            T("  grupy / dopasowane: %s / %s") % (meta.get("groups", "—"), meta.get("matched_groups", "—")),
+            T("  zapisano: %s") % _fmt_time(meta.get("saved_at")),
             "",
-            "Pliki diagnostyczne:",
+            T("Pliki diagnostyczne:"),
             "  %s" % LOG_FILE,
             "  %s" % STATE_FILE,
             "  %s" % REPORT_FILE,
             "  %s" % MAPPING_FILE,
             "  %s" % OVERRIDES_FILE,
             "",
-            "Ostatni raport: %s" % ("dostępny" if report else "brak"),
-            "Worker: %s" % (("aktywny: %s" % GLOBAL_WORKER.task_name) if GLOBAL_WORKER.running else "bezczynny"),
+            T("Ostatni raport: %s") % (T("dostępny") if report else T("brak")),
+            T("Worker: %s") % ((T("aktywny: %s") % GLOBAL_WORKER.task_name) if GLOBAL_WORKER.running else T("bezczynny")),
         ]
         self["content"].setText("\n".join(lines))
 
@@ -540,8 +701,8 @@ class LogScreen(Screen):
         Screen.__init__(self, session)
         self["title"] = Label("Simple IPTV EPG • LOG")
         self["content"] = ScrollLabel("")
-        self["key_red"] = Label("ZAMKNIJ")
-        self["key_green"] = Label("WYCZYŚĆ LOG")
+        self["key_red"] = Label(T("ZAMKNIJ"))
+        self["key_green"] = Label(T("WYCZYŚĆ LOG"))
         self["footer"] = Label(_footer_text())
         self["actions"] = ActionMap(["SetupActions", "ColorActions", "DirectionActions"], {
             "cancel": self.close, "red": self.close, "green": self.clear,
@@ -554,13 +715,13 @@ class LogScreen(Screen):
             with io_open(LOG_FILE, "r") as handle:
                 text = handle.read()
         except Exception:
-            text = "Brak logu."
+            text = T("Brak logu.")
         self["content"].setText(text[-40000:])
         self["content"].lastPage()
 
     def clear(self):
         clear_log()
-        log_message("Log wyczyszczony z poziomu GUI.")
+        log_message(T("Log wyczyszczony z poziomu GUI."))
         self.refresh()
 
 
@@ -603,12 +764,12 @@ class ProjectScreen(Screen):
         self["qr_project"] = Pixmap()
         self["support_qr"] = Pixmap()
         self["title"] = Label("%s • %s" % (PROJECT_NAME, PLUGIN_TITLE))
-        self["qr_caption"] = Label("Zeskanuj QR\ni odwiedź stronę projektu")
+        self["qr_caption"] = Label(T("Zeskanuj QR\ni odwiedź stronę projektu"))
         self["info"] = Label(
-            "%s %s\n\nTwórca: %s\nE-mail: %s\n\nStrona projektu:\n%s\n\nRepozytorium: GitHub / OliOli2013" % (
+            T("%s %s\n\nTwórca: %s\nE-mail: %s\n\nStrona projektu:\n%s\n\nRepozytorium: GitHub / OliOli2013") % (
                 PLUGIN_TITLE, PLUGIN_VERSION, PLUGIN_AUTHOR, PLUGIN_EMAIL, PROJECT_URL))
-        self["support"] = Label("Chcesz wesprzeć dalszy rozwój darmowych projektów Enigma2?\nZeskanuj dodatkowy kod QR.")
-        self["key_red"] = Label("ZAMKNIJ")
+        self["support"] = Label(T("Chcesz wesprzeć dalszy rozwój darmowych projektów Enigma2?\nZeskanuj dodatkowy kod QR."))
+        self["key_red"] = Label(T("ZAMKNIJ"))
         self["footer"] = Label(_footer_text())
         self["actions"] = ActionMap(["SetupActions", "ColorActions"], {
             "cancel": self.close, "red": self.close,

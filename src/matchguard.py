@@ -34,8 +34,8 @@ def _text(value):
 
 def _norm(name):
     value = _text(name).strip().upper()
-    value = re.sub(r'^\s*[A-Z]{2}:\s*', ' ', value)
-    value = re.sub(r'\[(?:[A-Z]{2,3}(?:/[A-Z]{2,3})?|[A-Z]{2,3}_[A-Z0-9_]+)\]', ' ', value)
+    value = re.sub(r'^\s*[A-Z]{2,3}\s*[:|]\s*', ' ', value)
+    value = re.sub(r'\[(?:[A-Z]{2,3}(?:\s*[/,|+]\s*[A-Z]{2,3})*|[A-Z]{2,3}_[A-Z0-9_]+|ALT\s*[-:]\s*[^\]]{1,45})\]', ' ', value)
     value = re.sub(r'\((?:YT|YOUTUBE|HD|FHD|UHD|4K|HLS|IPTV)\)', ' ', value)
     value = value.replace('CANAL+', 'CANAL PLUS').replace('C+', 'CANAL PLUS')
     value = re.sub(r'\.PL\b', '', value)  # domain suffix, not channel variant
@@ -88,9 +88,16 @@ def _xml_names(xml_path, keys):
         return names
     opener = gzip.open if xml_path.lower().endswith('.gz') else open
     with opener(xml_path, 'rb') as handle:
+        channels_seen = 0
         for _event, elem in ET.iterparse(handle, events=('end',)):
             kind = elem.tag.rsplit('}', 1)[-1].lower()
+            if kind == 'programme' and channels_seen >= 10:
+                # Standard XMLTV has its full channel catalogue first.
+                # Avoid scanning millions of programmes just to validate names.
+                elem.clear()
+                break
             if kind == 'channel':
+                channels_seen += 1
                 cid = _text(elem.get('id'))
                 if cid in keys:
                     names[cid] = [_text(x.text) for x in elem if x.tag.rsplit('}', 1)[-1].lower() == 'display-name' and x.text]
@@ -99,8 +106,7 @@ def _xml_names(xml_path, keys):
                         names[cid].append(cid)
                 elem.clear()
             elif kind == 'programme':
-                # Valid XMLTV normally declares channels before programmes.
-                break
+                elem.clear()
     return names
 
 
@@ -143,7 +149,7 @@ def guard_mapping(mapping, services, xml_path, overrides=None):
     """Keep only XMLTV matches provably consistent with IPTV display names.
     False negatives are safer than injecting a different station's EPG.
     """
-    by_ref = dict((item.get('full_ref'), item.get('name', '')) for item in services if item.get('full_ref'))
+    by_ref = dict((item.get('full_ref'), item) for item in services if item.get('full_ref'))
     overrides = overrides or {}
     allowed_names = _xml_names(xml_path, set(mapping or {}))
     result = {}
@@ -154,9 +160,12 @@ def guard_mapping(mapping, services, xml_path, overrides=None):
             if ref in seen:
                 continue
             seen.add(ref)
-            name = by_ref.get(ref)
+            service = by_ref.get(ref)
+            name = service.get('name', '') if service else ''
             explicit = bool(name and (overrides.get(name) == cid or overrides.get(u''.join(_norm(name))) == cid))
-            if not name or not (explicit or _match_names(name, allowed_names.get(cid, []))):
+            hint_match = bool(service and any(_text(hint).lower() == _text(cid).lower()
+                for hint in (service.get('id_hints') or [])))
+            if not name or not (explicit or hint_match or _match_names(name, allowed_names.get(cid, []))):
                 stats['rejected_refs'] += 1
                 continue
             result.setdefault(cid, []).append(ref)

@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 
 from .epgcore import compact_name, local_tag, name_variants, tokenize
 from .logger import log_message
+from .epg_autopilot import country_codes_from_name
 
 
 class AutoMapper(object):
@@ -40,9 +41,13 @@ class AutoMapper(object):
             primary = service.get("norm") or (candidates[0] if candidates else "")
             if not primary:
                 continue
-            bucket = groups.setdefault(primary, {
+            # Do not collapse same station labels from different tagged countries.
+            # XMLTV source selection is regional; keep country-scoped refs separate.
+            codes = country_codes_from_name(service.get("name", ""))
+            key = primary + ("|" + "/".join(codes) if codes else "")
+            bucket = groups.setdefault(key, {
                 "refs": [], "candidates": set(), "tokens": set(), "id_hints": set(),
-                "name": service.get("name", ""), "primary": primary,
+                "name": service.get("name", ""), "primary": primary, "country_tags": tuple(codes),
             })
             if ref and ref not in bucket["refs"]:
                 bucket["refs"].append(ref)
@@ -79,9 +84,13 @@ class AutoMapper(object):
                     id_index[xml_id] = xml_id
                     id_index[xml_id.lower()] = xml_id
                     names = [xml_id]
+                    countries = set()
                     for child in list(elem):
                         if local_tag(child.tag) == "display-name" and child.text:
                             names.append(child.text)
+                            lang = (child.get("lang") or "").upper()
+                            if len(lang) == 2:
+                                countries.add(lang)
                     compacts = set()
                     tokens = set()
                     for raw_name in names:
@@ -92,9 +101,16 @@ class AutoMapper(object):
                         for token in tokenize(raw_name):
                             tokens.add(token)
                             token_index.setdefault(token, set()).add(xml_id)
-                    entries[xml_id] = {"compacts": compacts, "tokens": tokens}
+                    entries[xml_id] = {"compacts": compacts, "tokens": tokens, "countries": countries}
                     elem.clear()
                 elif tag == "programme":
+                    # Normal XMLTV feeds declare their channel catalogue before
+                    # their programmes. Do not parse millions of programmes just
+                    # to construct a channel-name index. For unusual feeds with
+                    # programmes before channels, retain the original scan.
+                    if len(entries) >= 10 and processed_programmes == 0:
+                        elem.clear()
+                        break
                     processed_programmes += 1
                     elem.clear()
                     if root is not None and processed_programmes % 250 == 0:
@@ -203,14 +219,29 @@ class AutoMapper(object):
                 if options:
                     top_score, top_id = options[0]
                     second_score = options[1][0] if len(options) > 1 else 0.0
+                    exact_hits = [cid for score, cid in options if score >= 0.9999]
+                    # Exact alias is stronger evidence than a merely similar name.
+                    # Where multiple exact aliases exist, use broadcaster country only
+                    # when precisely one XMLTV record declares that code.
+                    if len(exact_hits) == 1:
+                        top_id, top_score = exact_hits[0], 1.0
+                        second_score = 0.0
+                    elif len(exact_hits) > 1:
+                        codes = set(group.get('country_tags') or ())
+                        regional = [cid for cid in exact_hits if codes & entries.get(cid, {}).get('countries', set())]
+                        if len(regional) == 1:
+                            top_id, top_score = regional[0], 1.0
+                            second_score = 0.0
                     exactish = top_score >= 0.985
-                    # Reject fuzzy ties; a wrong EPG is worse than no EPG.
-                    # Two equally good exact aliases are ambiguous too.
+                    # Never choose arbitrarily among multiple indistinguishable
+                    # programme feeds; keep those references for manual mapping.
                     if (second_score == 0.0 or (top_score - second_score) >= 0.025):
                         owner = used_xml.get(top_id)
-                        if owner is None or owner == group_key:
+                        # Different mirrors / tagged versions of the SAME channel
+                        # can safely share its XMLTV id. Previously one was dropped.
+                        if owner is None or owner == group.get('primary'):
                             chosen = top_id
-                            reason = "exact" if exactish else "fuzzy"
+                            reason = 'exact' if exactish else 'fuzzy'
                             if exactish:
                                 exact_count += 1
                             else:
@@ -219,7 +250,7 @@ class AutoMapper(object):
                         ambiguous.append({"name": group.get("name", ""), "options": options[:3]})
 
             if chosen:
-                used_xml.setdefault(chosen, group_key)
+                used_xml.setdefault(chosen, group.get('primary'))
                 refs = mapping.setdefault(chosen, [])
                 for service_ref in group.get("refs", []):
                     if service_ref not in refs:

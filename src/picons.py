@@ -25,14 +25,15 @@ except ImportError:
 
 from .compat import command_exists, ensure_dir, run_command, to_text
 from .epgcore import compact_name, local_tag, POLISH_MAP
+from .picon_cleanup import cleanup_generated, is_generated_picon
 
 CATALOG_CHANNELS = 'https://iptv-org.github.io/api/channels.json'
 CATALOG_LOGOS = 'https://iptv-org.github.io/api/logos.json'
 PNG_HEADER = b'\x89PNG\r\n\x1a\n'
 MAX_ICON = 2 * 1024 * 1024
 MAX_CATALOG = 14 * 1024 * 1024
-MAX_LOGOS = 200
-MAX_DOWNLOADS = 80                  # Protect flash; not a service cap for EPG.
+MAX_LOGOS = 450
+MAX_DOWNLOADS = 120                  # Protect flash; not a service cap for EPG.
 
 
 def _private_address(addr):
@@ -122,6 +123,9 @@ def _picon_dir():
 
 def _snp(name):
     value = to_text(name).lower()
+    # Country/provider flags are not part of the station's logo identity.
+    # Unique-name checks below still prevent cross-brand SNP collisions.
+    value = re.sub(r'\[[^\]]{1,50}\]', '', value)
     for key, replacement in POLISH_MAP.items():
         value = value.replace(key.lower(), replacement.lower())
     value = value.replace('canal+', 'canalplus').replace('c+', 'canalplus')
@@ -278,66 +282,105 @@ def _catalog_index(names, ids):
         return {}, {}
 
 
-def install_picons(services, mappings, sat_services=None, allow_catalog=True, log_cb=None, max_new=MAX_LOGOS):
-    """mappings: [(path_to_XMLTV, {xmltv_id: [full_iptv_refs]})].
+def cleanup_placeholder_picons(dry_run=True):
+    """Opt-in purge of exact RC8 text placeholders, never genuine/user picons."""
+    return cleanup_generated(_picon_dir(), dry_run=dry_run)
 
-    Only absent IPTV logos are created. SAT services/bouquets/EPG are untouched.
-    Count 'created' as PNG files, 'covered' as distinct IPTV service refs.
+
+def _write_real_png(destination, blob):
+    """Write new logo or safely replace an old plugin-generated placeholder."""
+    if not blob or not blob.startswith(PNG_HEADER) or len(blob) > MAX_ICON:
+        return ''
+    if not os.path.lexists(destination):
+        return 'created' if _write_new_png(destination, blob) else ''
+    if not is_generated_picon(destination):
+        return ''
+    descriptor, temp = tempfile.mkstemp(prefix='.simpleepg-real-', suffix='.png',
+                                       dir=os.path.dirname(destination))
+    try:
+        with os.fdopen(descriptor, 'wb') as out:
+            out.write(blob)
+        os.chmod(temp, 0o644)
+        if not is_generated_picon(destination):
+            return ''
+        os.rename(temp, destination)
+        return 'replaced'
+    except (IOError, OSError):
+        return ''
+    finally:
+        if os.path.exists(temp):
+            try:
+                os.unlink(temp)
+            except OSError:
+                pass
+
+
+def install_picons(services, mappings, sat_services=None, allow_catalog=True, log_cb=None, max_new=MAX_LOGOS):
+    """Real IPTV logos only. Never create text picons or overwrite user/SAT logos.
+
+    RC8-generated text placeholders are considered *missing* and can be
+    replaced atomically, without needing cleanup or blocking other plugins.
     """
     directory = _picon_dir()
-    stats = {'directory': directory or '', 'created': 0, 'covered': 0, 'skipped': 0, 'catalog': 0, 'xmltv': 0, 'local_sat': 0}
+    stats = {'directory': directory or '', 'created': 0, 'replaced': 0,
+             'covered': 0, 'skipped': 0, 'missing_real_logo': 0,
+             'existing_placeholders': 0, 'catalog': 0, 'xmltv': 0,
+             'local_sat': 0, 'fallback': 0, 'low_space': False}
     if not directory:
         return stats
     services = [entry for entry in services if entry.get('full_ref')]
-    ref_to_ids = {}
-    icon_by_ref = {}
+    ref_to_ids, icon_by_ref = {}, {}
     for xml_path, mapping in mappings:
-        ids = set(mapping or {})
-        images = _icon_map(xml_path, ids)
+        images = _icon_map(xml_path, set(mapping or {}))
         for cid, refs in (mapping or {}).items():
             for ref in refs:
                 ref_to_ids.setdefault(ref, set()).add(cid)
                 if cid in images and ref not in icon_by_ref:
                     icon_by_ref[ref] = images[cid]
-    # Avoid collisions between two services with identical legacy reference tuple.
-    by_srp = {}
-    by_snp = {}
+    by_srp, by_snp = {}, {}
     for entry in services:
         identity = compact_name(entry.get('name', ''))
         key = _srp(entry['full_ref'])
         if key:
             by_srp.setdefault(key, set()).add(identity)
-        if _snp(entry.get('name', '')):
-            by_snp.setdefault(_snp(entry.get('name', '')), set()).add(identity)
+        snp = _snp(entry.get('name', ''))
+        if snp:
+            by_snp.setdefault(snp, set()).add(identity)
     local_sat = {}
     for entry in sat_services or []:
         key = compact_name(entry.get('name'))
         picon = _srp(entry.get('full_ref', ''))
         if key and picon:
             candidate = os.path.join(directory, picon)
-            if os.path.isfile(candidate) and os.path.getsize(candidate) <= MAX_ICON:
+            if (os.path.isfile(candidate) and not os.path.islink(candidate)
+                    and 0 < os.path.getsize(candidate) <= MAX_ICON
+                    and not is_generated_picon(candidate)):
                 local_sat.setdefault(key, candidate)
     wanted_names = set(compact_name(x.get('name')) for x in services if x.get('name'))
-    wanted_ids = set(y for x in ref_to_ids.values() for y in x)
+    wanted_ids = set(y for ids in ref_to_ids.values() for y in ids)
     cat_names, cat_logos = ({}, {})
-    # Reuse local files and XMLTV first. Skip online metadata if nothing is missing.
-    requires_online = any(
-        _snp(x.get('name', '')) and
-        not os.path.lexists(os.path.join(directory, _snp(x.get('name', '')) + '.png')) and
-        x.get('full_ref') not in icon_by_ref and
-        compact_name(x.get('name')) not in local_sat
-        for x in services
-    )
-    if allow_catalog and requires_online:
-        cat_names, cat_logos = _catalog_index(wanted_names, wanted_ids)
+    # A generated placeholder must NEVER stop looking for a real logo.
+    if allow_catalog:
+        requires_online = False
+        for entry in services:
+            name, ref = entry.get('name', ''), entry['full_ref']
+            snp = _snp(name)
+            if not snp or ref in icon_by_ref or compact_name(name) in local_sat:
+                continue
+            path = os.path.join(directory, snp + '.png')
+            if not os.path.lexists(path) or is_generated_picon(path):
+                requires_online = True
+                break
+        if requires_online:
+            cat_names, cat_logos = _catalog_index(wanted_names, wanted_ids)
+    # Prefer known logos (XMLTV and local SAT) ahead of weaker catalogue hits;
+    # limits on downloads/files must not be consumed by generic placeholder rows.
+    services.sort(key=lambda x: (0 if x['full_ref'] in icon_by_ref else
+                                 1 if compact_name(x.get('name', '')) in local_sat else 2))
     fetched = {}
-    seen_ref = set()
     for entry in services:
-        ref = entry['full_ref']
-        name = entry.get('name') or ''
-        key = compact_name(name)
-        snp = _snp(name)
-        rp = _srp(ref)
+        ref, name = entry['full_ref'], entry.get('name') or ''
+        key, snp, rp = compact_name(name), _snp(name), _srp(ref)
         targets = []
         if rp and len(by_srp.get(rp, ())) == 1:
             targets.append(rp)
@@ -346,20 +389,35 @@ def install_picons(services, mappings, sat_services=None, allow_catalog=True, lo
         if not targets:
             stats['skipped'] += 1
             continue
-        missing = [os.path.join(directory, target) for target in targets if not os.path.lexists(os.path.join(directory, target))]
-        if not missing:
+        targets = list(dict.fromkeys(targets))
+        paths = [os.path.join(directory, target) for target in targets]
+        missing = [path for path in paths if not os.path.lexists(path)]
+        generated = [path for path in paths if is_generated_picon(path)]
+        if generated:
+            stats['existing_placeholders'] += 1
+        if not missing and not generated:
             stats['covered'] += 1
             continue
-        blob = None
-        origin = ''
-        if key in local_sat:
+        blob, origin = None, ''
+        # Reuse a genuine picon for another alias of the same channel.
+        for path in paths:
+            if os.path.isfile(path) and not os.path.islink(path) and not is_generated_picon(path):
+                try:
+                    with open(path, 'rb') as reader:
+                        candidate = reader.read(MAX_ICON + 1)
+                    if candidate.startswith(PNG_HEADER) and len(candidate) <= MAX_ICON:
+                        blob, origin = candidate, 'local_sat'
+                        break
+                except (IOError, OSError):
+                    pass
+        if not blob and key in local_sat:
             try:
                 with open(local_sat[key], 'rb') as reader:
                     blob = reader.read(MAX_ICON + 1)
-                if not blob.startswith(PNG_HEADER):
+                if not blob.startswith(PNG_HEADER) or len(blob) > MAX_ICON:
                     blob = None
                 origin = 'local_sat'
-            except Exception:
+            except (IOError, OSError):
                 blob = None
         if not blob:
             url = icon_by_ref.get(ref)
@@ -375,27 +433,36 @@ def install_picons(services, mappings, sat_services=None, allow_catalog=True, lo
                 origin = 'catalog'
             if url:
                 if url not in fetched:
-                    # Explicit cap on remote fetches avoids blocking weaker boxes.
-                    if len(fetched) >= MAX_DOWNLOADS:
-                        fetched[url] = None
-                    else:
-                        fetched[url] = _normalized_image_bytes(_fetch(url, MAX_ICON))
+                    fetched[url] = (_normalized_image_bytes(_fetch(url, MAX_ICON))
+                                    if len(fetched) < MAX_DOWNLOADS else None)
                 blob = fetched[url]
         if not blob:
-            stats['skipped'] += 1
+            stats['missing_real_logo'] += 1
             continue
-        created = 0
-        for target in missing:
-            if stats['created'] >= max_new:
+        written = False
+        for path in missing + generated:
+            if stats['created'] + stats['replaced'] >= max_new:
                 break
-            if _write_new_png(target, blob):
-                created += 1
-                stats['created'] += 1
-        if created:
+            try:
+                disk = os.statvfs(directory)
+                if disk.f_bavail * disk.f_frsize < (32 * 1024 * 1024 + len(blob)):
+                    stats['low_space'] = True
+                    break
+            except (IOError, OSError):
+                stats['low_space'] = True
+                break
+            result = _write_real_png(path, blob)
+            if result:
+                stats[result] += 1
+                written = True
+        if written:
             stats['covered'] += 1
             stats[origin] += 1
-            seen_ref.add(ref)
+    if stats['low_space'] and log_cb:
+        log_cb('Picony: zatrzymano zapis z powodu małej ilości wolnego miejsca.')
     if log_cb:
-        log_cb('Picony IPTV: %s nowych plików, %s usług z logiem, %s bez źródła. Katalog: %s' % (
-            stats['created'], stats['covered'], stats['skipped'], directory))
+        log_cb('Picony IPTV: +%s prawdziwych plików, %s zastąpionych atrap, '
+               '%s usług bez prawdziwego logo, %s starych atrap wykryto; katalog: %s' % (
+               stats['created'], stats['replaced'], stats['missing_real_logo'],
+               stats['existing_placeholders'], directory))
     return stats

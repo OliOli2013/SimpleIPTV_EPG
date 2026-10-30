@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import time
+import threading
 import xml.etree.ElementTree as ET
 
 from .compat import (
@@ -291,6 +292,78 @@ def _merge(primary, secondary):
     return out
 
 
+def _playback_key(entry):
+    """Identify the *same stream*, despite changed DVB identity fields.
+
+    Never merge on channel name alone: two feeds of TVP 1, for instance, may
+    have different URLs and both need EPG. Keep service type in the identity.
+    The URL/name may be differently percent-escaped by Enigma2 and bouquets.
+    """
+    ref = to_text(entry.get('full_ref', ''))
+    fields = ref.split(':', 10)
+    if len(fields) != 11 or not fields[10]:
+        return None
+    tail = unquote(fields[10])
+    name = compact_name(entry.get('name', ''))
+    # Strip only an explicitly matching trailing display-name, not a URL port.
+    if ':' in tail:
+        url_part, trailing = tail.rsplit(':', 1)
+        if name and compact_name(trailing) == name:
+            tail = url_part
+    if not tail or '//' not in tail:
+        return None
+    return (fields[0], tail, name)
+
+
+def reconcile_iptv_services(memory_services, file_services):
+    """Disk bouquet refs are authoritative for persisted channel identities.
+
+    eServiceCenter.getContent('SN') can retain pre-repair DVB fields or expose
+    an equivalent ref encoded differently. Treat these as *one* stream while
+    still retaining genuinely memory-only/dynamically generated IPTV services.
+    This never edits Enigma2, bouquets or streaming URLs.
+    """
+    disk_refs = set()
+    disk_streams = {}
+    result = []
+    for item in file_services or []:
+        ref = item.get('full_ref', '')
+        if not ref or ref in disk_refs:
+            continue
+        disk_refs.add(ref)
+        result.append(item)
+        key = _playback_key(item)
+        if key:
+            disk_streams.setdefault(key, item)
+
+    seen_refs = set(disk_refs)
+    memory_only = 0
+    collapsed_variants = 0
+    changed_dvb_fields = 0
+    for item in memory_services or []:
+        ref = item.get('full_ref', '')
+        if not ref or ref in seen_refs:
+            continue
+        key = _playback_key(item)
+        stored = disk_streams.get(key) if key else None
+        if stored is not None:
+            collapsed_variants += 1
+            if ref.split(':', 10)[:7] != to_text(stored.get('full_ref', '')).split(':', 10)[:7]:
+                changed_dvb_fields += 1
+            continue
+        seen_refs.add(ref)
+        result.append(item)
+        memory_only += 1
+    return result, {
+        'on_disk': len(disk_refs),
+        'in_memory': len(set(x.get('full_ref', '') for x in (memory_services or []) if x.get('full_ref'))),
+        'memory_only': memory_only,
+        'merged_duplicates': collapsed_variants,
+        'dvb_ref_disagreements': changed_dvb_fields,
+        'after_reconciliation': len(result),
+    }
+
+
 def scan_bouquet_services(main_call=None):
     file_iptv, file_sat, file_skipped = _scan_from_files()
     mem_iptv, mem_sat, mem_skipped = [], [], 0
@@ -301,7 +374,7 @@ def scan_bouquet_services(main_call=None):
             mem_iptv, mem_sat, mem_skipped = _scan_from_memory()
     except Exception as error:
         log_message("memory bouquet scan unavailable: %s" % error)
-    iptv = _merge(mem_iptv, file_iptv)
+    iptv, scan_diagnostics = reconcile_iptv_services(mem_iptv, file_iptv)
     sat_services = _merge(mem_sat, file_sat)
     digest = hashlib.sha256()
     for item in sorted(iptv, key=lambda entry: entry.get("full_ref", "")):
@@ -314,6 +387,7 @@ def scan_bouquet_services(main_call=None):
         "sat_services": sat_services,
         "skipped": int(file_skipped) + int(mem_skipped),
         "services_signature": digest.hexdigest() + ":" + sat_digest.hexdigest(),
+        "scan_diagnostics": scan_diagnostics,
     }
 
 
@@ -321,16 +395,46 @@ def source_fingerprint(url):
     return hashlib.sha256(to_bytes(url or "")).hexdigest()[:24]
 
 
-def _download_with_urllib(url, target_path, timeout):
-    request = Request(url, headers={"User-Agent": "SimpleIPTVEPG/3.0"})
+def _format_download_progress(count, total=None):
+    """Safe progress without exposing XMLTV URL or IPTV credentials."""
+    amount = '%.1f MB' % (float(count) / (1024 * 1024)) if count >= 1024 * 1024 else '%s KB' % (count // 1024)
+    if total and total > 0:
+        whole = '%.1f MB' % (float(total) / (1024 * 1024))
+        return 'POBIERANIE: %s / %s (%s%%)' % (amount, whole, min(99, int(count * 100 // total)))
+    return 'POBIERANIE: pobrano %s' % amount
+
+
+def _report_stream(progress_cb, amount, total=None):
+    if progress_cb:
+        try:
+            progress_cb(_format_download_progress(amount, total))
+        except Exception:
+            pass
+
+
+def _download_with_urllib(url, target_path, timeout, progress_cb=None):
+    request = Request(url, headers={'User-Agent': 'SimpleIPTVEPG/3.2'})
     response = urlopen(request, timeout=timeout)
     try:
-        with open(target_path, "wb") as handle:
+        header = response.headers.get('Content-Length') if hasattr(response, 'headers') else None
+        try:
+            total = int(header or 0)
+        except (TypeError, ValueError):
+            total = 0
+        done = 0
+        last = time.time()
+        with open(target_path, 'wb') as handle:
             while True:
                 chunk = response.read(128 * 1024)
                 if not chunk:
                     break
                 handle.write(chunk)
+                done += len(chunk)
+                now = time.time()
+                if done and now - last >= 2.0:
+                    _report_stream(progress_cb, done, total)
+                    last = now
+        _report_stream(progress_cb, done, total)
     finally:
         try:
             response.close()
@@ -339,57 +443,90 @@ def _download_with_urllib(url, target_path, timeout):
     return True
 
 
+def _run_with_monitored_progress(args, partial, timeout, progress_cb):
+    """Poll a partial file while curl/wget run; no GUI calls outside callback."""
+    if progress_cb is None:
+        return run_command(args, timeout=timeout)
+    stop = threading.Event()
+    def watch():
+        last_size = -1
+        last_at = time.time()
+        while not stop.wait(1.5):
+            try:
+                size = os.path.getsize(partial)
+            except (OSError, IOError):
+                continue
+            if size and size > last_size and (last_size < 0 or time.time() - last_at >= 2.5):
+                _report_stream(progress_cb, size)
+                last_size = size
+                last_at = time.time()
+    watcher = threading.Thread(target=watch)
+    watcher.daemon = True
+    watcher.start()
+    try:
+        return run_command(args, timeout=timeout)
+    finally:
+        stop.set()
+        watcher.join(2.0)
+        try:
+            size = os.path.getsize(partial)
+            if size:
+                _report_stream(progress_cb, size)
+        except (OSError, IOError):
+            pass
+
+
 def download_file(url, target_path, timeout=180, retries=2, log_cb=None):
     ensure_dir(TMP_DIR)
-    partial = target_path + ".part"
+    partial = target_path + '.part'
     for attempt in range(max(int(retries), 1)):
         try:
             if os.path.exists(partial):
                 os.remove(partial)
-        except Exception:
+        except (OSError, IOError):
             pass
         ok = False
         try:
-            curl = command_exists("curl")
-            wget = command_exists("wget")
+            curl = command_exists('curl')
+            wget = command_exists('wget')
             if curl:
-                code, output = run_command([
-                    curl, "-fL", "--connect-timeout", "20", "--max-time", str(timeout),
-                    "-A", "SimpleIPTVEPG/3.0", "-o", partial, url,
-                ], timeout=timeout + 15)
+                code, output = _run_with_monitored_progress([
+                    curl, '-fL', '--connect-timeout', '20', '--max-time', str(timeout),
+                    '-A', 'SimpleIPTVEPG/3.2', '-o', partial, url,
+                ], partial, timeout+15, log_cb)
                 ok = code == 0
                 if not ok:
-                    log_message("curl download failed: %s" % output[-500:])
+                    log_message('curl download failed: %s' % output[-500:])
             if not ok and wget:
-                code, output = run_command([
-                    wget, "-q", "--timeout=%s" % timeout, "-O", partial, url,
-                ], timeout=timeout + 15)
+                code, output = _run_with_monitored_progress([
+                    wget, '-q', '--timeout=%s' % timeout, '-O', partial, url,
+                ], partial, timeout+15, log_cb)
                 ok = code == 0
                 if not ok:
-                    log_message("wget download failed: %s" % output[-500:])
+                    log_message('wget download failed: %s' % output[-500:])
             if not ok:
-                ok = _download_with_urllib(url, partial, timeout)
+                ok = _download_with_urllib(url, partial, timeout, progress_cb=log_cb)
             if ok and os.path.exists(partial) and os.path.getsize(partial) > 256:
                 try:
                     if os.path.exists(target_path):
                         os.remove(target_path)
-                except Exception:
+                except (OSError, IOError):
                     pass
                 shutil.move(partial, target_path)
                 return True
         except Exception as error:
-            log_message("download error %s: %s" % (url, error))
+            # Do not include a private IPTV source URL in logs or UI.
+            log_message('XMLTV download error: %s' % type(error).__name__)
             if log_cb:
-                log_cb("Błąd pobierania: %s" % error)
+                log_cb('Błąd pobierania XMLTV (%s).' % type(error).__name__)
         if attempt + 1 < max(int(retries), 1):
             time.sleep(1.5)
     try:
         if os.path.exists(partial):
             os.remove(partial)
-    except Exception:
+    except (OSError, IOError):
         pass
     return False
-
 
 def validate_xmltv_file(path):
     """Stream-validate the complete XMLTV document without loading it into RAM."""
@@ -636,7 +773,11 @@ def verify_epg_main(refs):
             return {"checked": 0, "visible": 0}
         visible = 0
         checked = 0
-        for ref in list(refs)[:16]:
+        # Spread the test across all imported services instead of the first
+        # 16 (which systematically overstates success on long IPTV lists).
+        sample = list(refs)
+        step = max(1, (len(sample) + 63) // 64)
+        for ref in sample[::step][:64]:
             try:
                 checked += 1
                 item = cache.lookupEventTime(eServiceReference(to_text(ref)), int(time.time()))

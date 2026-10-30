@@ -11,6 +11,7 @@ from .constants import PLUGIN_BUILD, PLUGIN_TITLE, PLUGIN_VERSION
 from .logger import log_message
 from .screens import SimpleIPTVEPGMain, set_active_session
 from .settings import cfg
+from .i18n import T
 from .storage import load_state
 from .worker import GLOBAL_WORKER
 
@@ -30,10 +31,10 @@ def _auto_done(ok, result, silent):
     if not cfg.notify_done.value or ACTIVE_SESSION is None:
         return
     if ok:
-        message = "Automatyczny import EPG zakończony. XMLTV: %s kanałów / %s zdarzeń, SAT: %s kanałów." % (
+        message = T("Automatyczny import EPG zakończony. XMLTV: %s kanałów / %s zdarzeń, SAT: %s kanałów.") % (
             result.get("xml_service_refs", 0), result.get("xml_events", 0), result.get("sat_channels", 0))
     else:
-        message = "Automatyczny import EPG nie powiódł się: %s" % result.get("error", "sprawdź log")
+        message = T("Automatyczny import EPG nie powiódł się: %s") % result.get("error", T("sprawdź log"))
     try:
         ACTIVE_SESSION.open(MessageBox, message, MessageBox.TYPE_INFO, timeout=8)
     except Exception:
@@ -92,7 +93,7 @@ def session_start(reason, session=None, **kwargs):
 
 
 def Plugins(**kwargs):
-    description = "AIO XMLTV + SAT EPG importer dla kanałów IPTV"
+    description = T("AIO XMLTV + SAT EPG importer dla kanałów IPTV")
     return [
         PluginDescriptor(
             name="%s %s %s" % (PLUGIN_TITLE, PLUGIN_VERSION, PLUGIN_BUILD),

@@ -22,7 +22,7 @@ from .epgimport_bridge import (
 )
 from .logger import log_message
 from .picons import install_picons
-from .epg_autopilot import (choose_country_feeds, country_from_name,
+from .epg_autopilot import (choose_country_feeds, country_codes_from_name, country_assignments,
     dedupe_mapping, likely_unscheduled_count)
 from .matchguard import filter_unsafe_refs, guard_mapping
 from .settings import cfg
@@ -62,14 +62,26 @@ class EPGWorker(object):
         self.running = False
         self.task_name = ""
         self.bridge = MainThreadBridge()
+        self.last_progress = ""
+        self._recent_progress = ()
+        self._progress_seq = 0
 
     def _log(self, callback, message):
         log_message(message)
+        entry = to_text(message)
+        self._recent_progress = (self._recent_progress + (entry,))[-15:]
+        self._progress_seq += 1
+        if to_text(message).startswith('POBIERANIE:'):
+            self.last_progress = to_text(message)
         if callback:
             try:
                 callback(to_text(message))
             except Exception:
                 pass
+
+    def progress_snapshot(self):
+        return {'running': self.running, 'task': self.task_name,
+                'seq': self._progress_seq, 'lines': list(self._recent_progress)}
 
     def _selected_sources(self):
         source_id = cfg.source_select.value
@@ -95,7 +107,8 @@ class EPGWorker(object):
             suffix = ".xml.gz" if url.lower().split('?', 1)[0].endswith(".gz") else ".xml"
             target = os.path.join(TMP_DIR, "guide-%s%s" % (source_fingerprint(url), suffix))
             self._log(callback, "Źródło %s/%s: %s" % (index + 1, len(sources), safe_url(url)))
-            if not download_file(url, target, timeout=240, retries=2, log_cb=callback):
+            if not download_file(url, target, timeout=240, retries=2,
+                                 log_cb=lambda text: self._log(callback, text)):
                 self._log(callback, "Pobieranie nie powiodło się – próbuję kolejnego źródła.")
                 continue
             # Detect GZIP by bytes, not URL suffix (e.g. provider xmltv.php?user=).
@@ -139,7 +152,7 @@ class EPGWorker(object):
             return None, meta
         if meta.get("channel_signature", "") != channel_sig:
             return None, meta
-        if meta.get("mapping_format") != 5:
+        if meta.get("mapping_format") != 6:
             return None, meta
         return mapping, meta
 
@@ -150,7 +163,7 @@ class EPGWorker(object):
                 "source_id": source_id,
                 "source_url": safe_url(source_url),
                 "source_hash": source_fingerprint(source_url),
-                "mapping_format": 5,
+                "mapping_format": 6,
                 "channel_signature": channel_sig,
                 "source_fingerprint": source_fingerprint(source_url),
                 "sensitivity": sensitivity,
@@ -178,11 +191,14 @@ class EPGWorker(object):
             return False
         self.running = True
         self.task_name = task_name
+        self._recent_progress = ()
+        self._progress_seq += 1
         return True
 
     def _release(self):
         self.running = False
         self.task_name = ""
+        self._progress_seq += 1
         try:
             self.lock.release()
         except Exception:
@@ -213,12 +229,21 @@ class EPGWorker(object):
     def _run_import(self, callback, force_mapping=False):
         started = time.time()
         update_state(last_attempt=int(started), last_error="", last_result="running")
+        self._log(callback, "ETAP 1/5: analiza kanałów IPTV i SAT")
         self._log(callback, "Analiza bukietów Enigma2...")
         scan = scan_bouquet_services(main_call=self.bridge.call)
         iptv = scan.get("iptv", [])
         sat = scan.get("sat_services", [])
         skipped = scan.get("skipped", 0)
         signature = scan.get("services_signature", "")
+        scan_diagnostics = scan.get('scan_diagnostics', {})
+        self._log(callback, 'Referencje IPTV: pliki=%s, pamięć=%s, scalenia=%s, tylko pamięć=%s.' % (
+            scan_diagnostics.get('on_disk', 0), scan_diagnostics.get('in_memory', 0),
+            scan_diagnostics.get('merged_duplicates', 0), scan_diagnostics.get('memory_only', 0)))
+        if scan_diagnostics.get('dvb_ref_disagreements', 0):
+            self._log(callback, 'UWAGA: %s ref. strumieni ma inne pola DVB w pamięci niż na dysku. '
+                     'Po zmianie list/naprawie ref. uruchom ponownie GUI Enigma2.' %
+                     scan_diagnostics['dvb_ref_disagreements'])
         def dvb_identity(ref):
             fields = to_text(ref).split(':', 10)
             if len(fields) < 11 or not all(fields[i] for i in (3, 4, 5, 6)):
@@ -242,6 +267,7 @@ class EPGWorker(object):
             update_state(last_result="failed", last_error="Brak kanałów IPTV live")
             return False, {"error": "Brak kanałów IPTV live"}
 
+        self._log(callback, "ETAP 2/5: pobieranie przewodnika XMLTV")
         xml_path, source_id, source_url, native_channels_path = self._download_source(callback)
         if not xml_path:
             pstats = {'created': 0, 'covered': 0, 'skipped': 0}
@@ -278,6 +304,7 @@ class EPGWorker(object):
                 native_map, native_stats = import_bmx_mapping(native_channels_path, active_iptv)
                 self._log(callback, "BMX: %s/%s dopasowanych wpisów" % (
                     native_stats.get('bmx_matches', 0), native_stats.get('bmx_channels', 0)))
+            self._log(callback, "ETAP 3/5: mapowanie kanałów i import wydarzeń")
             self._log(callback, "Mapowanie pozostałych kanałów na podstawie nazw i tvg-id...")
             mapper = AutoMapper(callback, sensitivity=sensitivity, overrides=load_overrides())
             fallback_map, mapping_stats = mapper.generate_mapping(active_iptv, xml_path)
@@ -335,35 +362,82 @@ class EPGWorker(object):
         extra_sources = []
         country_plan = []
         if cfg.fill_missing.value:
+            self._log(callback, "ETAP 4/5: uzupełnianie EPG z innych źródeł")
             supplementary_sources = list(self._selected_sources())
-            if cfg.source_select.value in ("AUTO_AIO", "AUTO_PL", "AUTO_PL_RICH"):
+            # Map tagged channels to untagged ALT simulcasts of the exact same
+            # brand, considering all bouquets (not only the yet-uncovered set).
+            country_by_ref = country_assignments(active_iptv)
+            if cfg.source_select.value not in ("CUSTOM", "BMX_AUTO"):
+                # Global XMLTV sources are not full coverage of every IPTV brand.
+                # If opted into supplemental feeds, use regional sources as well.
+                if cfg.source_select.value not in ("AUTO_AIO", "AUTO_PL", "AUTO_PL_RICH"):
+                    fallback = SOURCE_MAP.get("AUTO_AIO", {}).get("urls", [])
+                    supplementary_sources.extend(("AUTO_FALLBACK", url, None)
+                                                 for url in fallback if url != source_url)
                 uncovered = [entry for entry in active_iptv if entry.get("full_ref") not in xml_refs]
                 used = [url for _sid, url, _channels in supplementary_sources]
-                country_plan = choose_country_feeds(uncovered, used_urls=used, limit=2, minimum=12)
-                supplementary_sources.extend(("AUTO_COUNTRY_" + code, url, None)
-                                             for code, url, _count in country_plan)
+                # Prioritise foreign feeds BEFORE further PL fallbacks. RC5 always
+                # exhausted the extra-feed budget on PL sources for mixed AIO lists.
+                planned = [dict(entry, name=entry.get('name', ''),
+                                country_tags=country_by_ref.get(entry.get('full_ref', ''), ()))
+                           for entry in uncovered]
+                country_plan = choose_country_feeds(planned, used_urls=used,
+                                                    limit=5, minimum=1)
+                regional = [("AUTO_COUNTRY_" + code, url, None)
+                            for code, url, _count in country_plan]
+                supplementary_sources = regional + supplementary_sources
+                # The compact PL and regional feeds miss many real channels
+                # that have current programmes in EPG.PW full. Try the full
+                # guide *after* lightweight sources, not in place of them.
+                if cfg.source_select.value in ("AUTO_AIO", "AUTO_PL", "AUTO_PL_RICH"):
+                    full_urls = SOURCE_MAP.get("EPGPW_ALL", {}).get("urls", [])
+                    for full_url in full_urls:
+                        if full_url != source_url and full_url not in [x[1] for x in supplementary_sources]:
+                            # The lite provider is less useful than its full
+                            # feed. Place the large guide before the lite one,
+                            # while keeping regional/PL guides first.
+                            insert_at = next((i for i, (_tag, url, _ch) in enumerate(supplementary_sources)
+                                              if "epg_lite.xml.gz" in url), len(supplementary_sources))
+                            supplementary_sources.insert(insert_at, ("AUTO_GLOBAL_FULL", full_url, None))
                 if country_plan:
                     self._log(callback, "Dodatkowe EPG wedlug kraju: %s" %
                               ", ".join("%s (%s)" % (code, count) for code, _url, count in country_plan))
+            seen_source_urls = set([source_url])
             for secondary_id, secondary_url, _channel_file in supplementary_sources:
-                if secondary_url == source_url or len(extra_sources) >= 6:
+                if secondary_url in seen_source_urls or len(extra_sources) >= 9:
+                    continue
+                seen_source_urls.add(secondary_url)
+                if len(extra_sources) >= 9:
                     continue
                 missing = [service for service in active_iptv if service.get('full_ref') not in xml_refs
                            and (not cfg.prefer_sat.value or service.get('full_ref') not in cloned_refs)]
                 if secondary_id.startswith('AUTO_COUNTRY_'):
                     country = secondary_id[len('AUTO_COUNTRY_'):]
                     missing = [service for service in missing
-                               if country_from_name(service.get('name', '')) == country]
+                               if country in country_by_ref.get(service.get('full_ref', ''), ())]
                 if not missing:
                     if secondary_id.startswith('AUTO_COUNTRY_'):
                         continue
                     break
+                if secondary_id == "AUTO_GLOBAL_FULL":
+                    # EPG.PW full currently requires about 50 MB of temporary
+                    # storage. Preserve headroom for tuner/EPG operations.
+                    try:
+                        fs = os.statvfs(TMP_DIR)
+                        free_bytes = fs.f_bavail * fs.f_frsize
+                        if free_bytes < 90 * 1024 * 1024:
+                            self._log(callback, 'Pełne EPG.PW pominięte: za mało miejsca w /tmp (wymagane >=90 MB).')
+                            continue
+                    except (OSError, AttributeError):
+                        self._log(callback, 'Nie udało się sprawdzić miejsca /tmp; pomijam duży przewodnik.')
+                        continue
                 suffix = '.xml.gz' if secondary_url.lower().split('?', 1)[0].endswith('.gz') else '.xml'
                 extra_path = os.path.join(TMP_DIR, 'fill-%s%s' % (source_fingerprint(secondary_url), suffix))
                 extra_sources.append(safe_url(secondary_url))
                 self._log(callback, 'Uzupełnianie braków EPG (%s usług): %s' % (
                     len(missing), safe_url(secondary_url)))
-                if not download_file(secondary_url, extra_path, timeout=180, retries=1):
+                if not download_file(secondary_url, extra_path, timeout=180, retries=1,
+                                     log_cb=lambda text: self._log(callback, text)):
                     continue
                 try:
                     with open(extra_path, 'rb') as handle:
@@ -413,6 +487,7 @@ class EPGWorker(object):
                     self._cleanup_xml(extra_path)
         picon_stats = {'created': 0, 'covered': 0, 'skipped': 0}
         if cfg.picons_enabled.value:
+            self._log(callback, 'ETAP 5/5: uzupełnianie piconów IPTV')
             try:
                 picon_stats = install_picons(
                     iptv, picon_mappings, sat_services=sat,
@@ -433,7 +508,7 @@ class EPGWorker(object):
         if injector.total_events > 0 and xml_refs:
             try:
                 checked = self.bridge.call(verify_epg_main, sorted(xml_refs), timeout=20)
-                self._log(callback, "Kontrola EPG na kanałach IPTV: widoczne %s/%s (próbka)." % (
+                self._log(callback, "Kontrola EPG na kanałach IPTV: widoczne %s/%s (próbka maks. 64 usług; nie cała lista)." % (
                     checked.get('visible', 0), checked.get('checked', 0)))
                 if checked.get('checked', 0) > 0 and checked.get('visible', 0) == 0:
                     self._log(callback, "UWAGA: Import zaakceptowany, lecz EPG niewidoczne w próbce. Sprawdź referencje kanałów / ustawienia image.")
@@ -441,10 +516,18 @@ class EPGWorker(object):
                 self._log(callback, "Kontrola widoczności EPG niedostępna: %s" % error)
 
         duration = int(time.time() - started)
+        matched_names = sorted(set(to_text(entry.get('name', '')).strip() for entry in iptv
+                                   if entry.get('full_ref') in xml_refs and entry.get('name')))
+        camera_streams = likely_unscheduled_count(iptv)
+        self._log(callback, 'EPG: %s/%s usług; %s strumieni bez typowej ramówki (kamera/radio/live).' % (
+            len(xml_refs), len(iptv), camera_streams))
+        self._log(callback, 'Kanały z EPG (próbka): %s' % (', '.join(matched_names[:12]) if matched_names else 'brak'))
         report = {
             "source_id": source_id,
             "source_url": safe_url(source_url),
+            "matched_channel_names": matched_names[:250],
             "iptv_services": len(iptv),
+            "scan_diagnostics": scan_diagnostics,
             "sat_collisions_protected": len(protected),
             "iptv_reference_guard": ref_guard,
             "sat_services": len(sat),
@@ -459,12 +542,20 @@ class EPGWorker(object):
             "mapping": mapping_stats,
             "extra_sources": extra_sources,
             "source_coverage": source_coverage,
+            "epg_coverage": {
+                "tagged_uncovered_by_country": dict((code, sum(1 for entry in active_iptv
+                    if code in country_by_ref.get(entry.get('full_ref', ''), ())
+                    and entry.get('full_ref') not in xml_refs))
+                    for code, _url, _count in country_plan),
+                "uncovered_refs": len([entry for entry in active_iptv
+                    if entry.get('full_ref') not in xml_refs]),
+            },
             "epg_autopilot": {
                 "duplicate_references_removed": duplicates_removed,
                 "planned_country_sources": [{"country": code, "candidates": count,
                                              "source": safe_url(url)}
                                             for code, url, count in country_plan],
-                "likely_unscheduled_heuristic": likely_unscheduled_count(iptv),
+                "likely_unscheduled_heuristic": camera_streams,
                 "source_count": len(source_coverage),
             },
             "picons": picon_stats,
