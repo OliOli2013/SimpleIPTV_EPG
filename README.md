@@ -1,113 +1,158 @@
-# Simple IPTV EPG 3.2.0 RC5 AUTO
+# Simple IPTV EPG 3.2.6 RC11.1
 
-**Enigma2 • Python 2 / Python 3 • XMLTV EPG i picony IPTV**  
+**Automatyczne EPG i prawdziwe picony dla kanałów IPTV w Enigma2**  
 **Autor:** Paweł Pawełek | AIO Team  
-**Status:** wersja testowa RC5 (nie wydanie stabilne)
+**Wersja kodu:** `3.2.6` · **build:** `rc11.1-menu-cleanup`  
+**Status:** wersja testowa (Release Candidate)  
+**Środowisko:** Enigma2, kod przygotowany do pracy z Pythonem 2 i Pythonem 3
 
-Simple IPTV EPG automatycznie dopasowuje dostępne przewodniki XMLTV do kanałów w bukietach IPTV tunera Enigma2 i importuje wydarzenia do systemowej pamięci EPG. Potrafi też uzupełniać brakujące picony IPTV. Nie wymaga edytowania bukietów przez użytkownika i **nie zapisuje zmian w listach kanałów**.
+[Repozytorium projektu](https://github.com/OliOli2013/SimpleIPTV_EPG)
 
-> **Ważne:** EPG jest importowane tylko dla usług, dla których istnieje wiarygodne dopasowanie i źródło zawiera rzeczywistą ramówkę. Kamera internetowa, transmisja okazjonalna lub kanał bez publikowanego XMLTV może pozostać bez EPG. Wersja RC5 jest nadal testowana.
+## Czym jest Simple IPTV EPG?
 
-## Nowości 3.2.0 RC5 AUTO
+Simple IPTV EPG to wtyczka dla odbiorników z systemem **Enigma2**, która odczytuje kanały IPTV z istniejących bukietów, wyszukuje dla nich program telewizyjny w przewodnikach **XMLTV** i importuje odnalezione wydarzenia do systemowej pamięci EPG. Może również uzupełniać **prawdziwe logotypy kanałów (picony)**.
 
-- **Prostszy ekran główny:** tylko źródło EPG, częstotliwość automatycznego importu i uzupełnianie piconów.
-- **Ustawienia zaawansowane:** wszystkie dotychczasowe opcje są nadal dostępne przez niebieski przycisk **NARZĘDZIA → Ustawienia zaawansowane**.
-- **AUTO AIO Polska:** stopniowe uzupełnianie brakujących wydarzeń z niezależnych źródeł XMLTV (EPG.OVH, EPGShare, PolishTeam, iptv-epg.org i EPG.PW). Dodatkowe źródła są używane do brakujących usług, nie do zamiany prawidłowo przypisanej ramówki.
-- **EPG Autopilot:** może wybrać do dwóch dodatkowych regionalnych przewodników EPGShare dla kanałów oznaczonych kodem kraju, np. `[UK]` czy `[DE]`, jeśli jest odpowiednio dużo takich usług. Pokrycie zależy od jakości danych dostawców.
-- **Bezpieczniejsze mapowanie:** weryfikacja nazw kanałów oraz aliasów XMLTV; ograniczenie fałszywych dopasowań, odrzucanie kolizyjnych i nieprawidłowych referencji.
-- **Duplikaty:** deduplikacja wpisów IPTV różniących się tylko zapisem części szesnastkowej referencji; adresy strumieni pozostają niezmienione.
-- **Poprawiony importer Enigma2:** prawidłowe przekazanie listy referencji do `eEPGCache.importEvents()`.
-- **Picony IPTV:** uzupełnianie brakujących PNG z dostępnych katalogów i logotypów XMLTV. Istniejące picony nie są celowo nadpisywane.
-- **Trwały zapis ustawień:** konfiguracja jest zapisywana do `/etc/enigma2/settings`, a błąd zapisu jest wyświetlany użytkownikowi.
-- **Raportowanie:** liczby kanałów i wydarzeń XMLTV, udział kolejnych źródeł, plan źródeł regionalnych, problemy z referencjami i wynik próbki kontroli EPG.
+Nie jest odtwarzaczem IPTV, nie dostarcza list kanałów ani strumieni. Działa z bukietami już obecnymi w odbiorniku — nie tylko z listami AIO Team. Program TV pojawi się wyłącznie dla usług, dla których uda się znaleźć wiarygodne dopasowanie i aktualne dane XMLTV.
 
-## Pierwsze uruchomienie — zalecane ustawienia
+## Najważniejsze funkcje
 
-Na świeżej instalacji zalecane wartości domyślne:
-
-| Ustawienie na ekranie głównym | Wartość |
-|---|---|
-| Źródło EPG | **AUTO AIO Polska** |
-| Automatyczny import | **Co 24 godziny** |
-| Uzupełnianie piconów IPTV | **Tak** |
-
-W ustawieniach zaawansowanych domyślnie wyłączone są: **Kopiuj EPG SAT → IPTV** i **Preferuj EPG z SAT**. Nie włączaj ich bez potrzeby. **Aktualizacja istniejącej instalacji zachowuje wcześniejsze zapisane ustawienia**, więc po aktualizacji sprawdź te dwa przełączniki.
-
-### Przyciski pilota
-
-- **Zielony:** import EPG zgodnie z bieżącymi ustawieniami.
-- **Żółty:** test dostępności źródła.
-- **Niebieski:** narzędzia (diagnostyka, log, pełny import i nowe mapowanie, osobne uzupełnianie piconów, opcje zaawansowane).
-- **OK:** zapis ustawień.
-- **Czerwony:** zamknięcie.
-
-Po pierwszej instalacji zalecane jest **Niebieski → Wymuś pełny import + nowe mapowanie**. Poczekaj na zakończenie i sprawdź EPG na kilku różnych kanałach, nie tylko licznik wydarzeń.
+- **EPG z wielu źródeł:** automatyczne uzupełnianie braków z przewodników polskich, regionalnych i globalnych, w tym EPG.OVH, EPGShare, PolishTeam, IPTV-EPG.org i EPG.PW.
+- **Mapowanie IPTV ↔ XMLTV:** identyfikacja stacji według nazw, aliasów i dostępnych identyfikatorów; odrzucanie niejednoznacznych dopasowań.
+- **Pełny import i przebudowa mapowania:** osobna funkcja w menu Narzędzia, przydatna po zmianie list IPTV.
+- **Prawdziwe picony:** uzupełnianie dostępnych logo z danych XMLTV, katalogów internetowych i lokalnych zasobów. Aktualny build nie tworzy tekstowych atrap piconów.
+- **Praca w tle:** po rozpoczęciu importu można zamknąć *okno wtyczki*. Zadanie działa dalej, dopóki uruchomione jest GUI Enigma2; restart GUI albo wyłączenie odbiornika może je przerwać.
+- **Harmonogram:** automatyczny import co 6, 12, 24 lub 48 godzin albo wyłączenie harmonogramu.
+- **Polski i angielski:** wybór automatyczny według języka Enigma2 lub ręczny w menu.
+- **Diagnostyka:** informacje o etapach pracy, wykorzystanych źródłach, znalezionych dopasowaniach, liczbie wydarzeń, piconach i problemach z referencjami.
+- **Ochrona usług SAT:** kontrola kolizji identyfikatorów IPTV z kanałami satelitarnymi podczas importu.
+- **Opcjonalna naprawa referencji IPTV:** wyłącznie na polecenie użytkownika, z podglądem zakresu zmian i kopią zapasową bukietów.
+- **Współpraca z BouquetMakerXtream:** możliwość wykorzystania wykrytych źródeł XMLTV i mapowań `channels.xml`, jeśli są dostępne.
 
 ## Instalacja
 
-### A. Instalator z GitHub (aktualny kod z `main`)
+### Metoda 1 — AIO Panel
 
-Na tunerze Enigma2 z działającą siecią oraz narzędziami `wget` lub `curl` i `unzip`:
+Otwórz **AIO Panel**, odszukaj **Simple IPTV EPG** na liście instalatorów wtyczek i uruchom instalację. Dostępność konkretnej wersji zależy od aktualizacji instalatora w AIO Panel.
+
+### Metoda 2 — instalator z GitHub
+
+Połącz się z tunerem przez SSH lub Telnet i wykonaj:
 
 ```sh
 wget -O /tmp/simpleiptvepg_installer.sh https://raw.githubusercontent.com/OliOli2013/SimpleIPTV_EPG/main/installer.sh
 sh /tmp/simpleiptvepg_installer.sh
 ```
 
-Instalator pobiera kod z katalogu **`src/`**, nie starych modułów znajdujących się dawniej w katalogu głównym. Po instalacji **zrestartuj GUI Enigma2**.
+Wymagania: Enigma2, połączenie z Internetem, `unzip` oraz `wget` (lub `curl` przy uruchamianiu instalatora inną drogą). Instalator pobiera bieżący kod z katalogu **`src/` na gałęzi `main`** i zastępuje pliki wtyczki. Nie korzysta ze starszych modułów znajdujących się w katalogu głównym repozytorium.
 
-### B. Instalacja lokalnego IPK
+**Po instalacji uruchom ponownie GUI Enigma2.** Przed aktualizacją zalecana jest kopia ustawień i konfiguracji tunera.
 
-Jeśli masz zbudowany pakiet `enigma2-plugin-extensions-simpleiptvepg_3.2.0-rc5-auto_all.ipk`, skopiuj go do `/tmp/` i na obrazach z `opkg` wykonaj:
+### Metoda 3 — lokalny pakiet IPK
+
+Jeśli masz pakiet IPK przeznaczony dla swojego obrazu Enigma2, skopiuj go do `/tmp` i zainstaluj odpowiednim menedżerem pakietów. W obrazach z `opkg` stosuje się polecenie:
 
 ```sh
-opkg install /tmp/enigma2-plugin-extensions-simpleiptvepg_3.2.0-rc5-auto_all.ipk
+opkg install /tmp/nazwa-pakietu.ipk
 ```
 
-Ten pakiet RC5 jest **testowy**. Brak opublikowanego Release RC5 na GitHubie nie oznacza, że ten plik można pobrać z zakładki Releases. Nie próbuj instalować pliku `.ipk` poleceniem `dpkg -i`, jeśli obraz obsługuje tylko pakiety `.deb`.
+Zastąp `nazwa-pakietu.ipk` rzeczywistą nazwą pobranego pliku. **Uwaga:** pakiety udostępnione w sekcji [Releases](https://github.com/OliOli2013/SimpleIPTV_EPG/releases) mogą być starsze niż kod na gałęzi `main`. Nie zakładaj, że najnowszy build RC11.1 ma już osobny plik IPK w Releases.
 
-## Ustawienia zaawansowane i źródła
+## Pierwsze uruchomienie
 
-W **NARZĘDZIA → Ustawienia zaawansowane** dostępne są m.in.:
+1. Otwórz **Simple IPTV EPG** z listy wtyczek Enigma2.
+2. Wybierz źródło **AUTO AIO Polska** (ustawienie domyślne).
+3. Ustaw automatyczny import, np. **24 h**, i wybierz, czy chcesz uzupełniać picony.
+4. Wejdź do **Narzędzia → Ustawienia zaawansowane** i sprawdź opcje kopiowania EPG z SAT (szczegóły poniżej).
+5. Zapisz ustawienia przyciskiem **OK**.
+6. Wybierz **Narzędzia → Wymuś pełny import + nowe mapowanie**.
+7. Sprawdź program telewizyjny na kilku konkretnych kanałach IPTV. Sam licznik zdarzeń w raporcie nie jest dowodem pokrycia całej listy.
 
-- zakres importu 2–10 dni;
-- uzupełnianie EPG z dodatkowych źródeł;
-- wyszukiwanie piconów w katalogu internetowym;
-- czułość mapowania (ścisłe, zbalansowane, elastyczne);
-- kopiowanie SAT → IPTV i preferencja EPG SAT (domyślnie wyłączone);
-- powiadomienia, zapis bazy EPG, pliki tymczasowe i opóźnienie zadania po starcie.
+Import dużych przewodników może potrwać kilka lub kilkanaście minut, a na słabszych odbiornikach dłużej. Pełne źródło EPG.PW jest wykorzystywane jako uzupełnienie w trybach AUTO, o ile pozwala na to miejsce w pamięci tymczasowej; kod wymaga **co najmniej 90 MiB wolnego miejsca w `/tmp`** przed tą próbą.
 
-Dostępne jest również automatyczne odczytywanie `sources.xml` / `channels.xml` z BouquetMakerXtream oraz własny adres XMLTV. Nie jest wymagane posiadanie BouquetMakerXtream, by używać `AUTO AIO Polska`.
+## Ustawienia
 
-## Diagnostyka i bezpieczeństwo
+| Opcja | Znaczenie | Wartość domyślna w aktualnym kodzie |
+|---|---|---|
+| Źródło EPG | Wybór przewodnika lub trybu AUTO | `AUTO AIO Polska` |
+| Automatyczny import | Odstęp między aktualizacjami | `24 h` |
+| Uzupełniaj picony IPTV | Pobieranie brakujących prawdziwych logo | `Tak` |
+| Język interfejsu | Automatycznie / Polski / English | `Automatycznie` |
+| Uzupełniaj brakujące EPG | Korzystanie z dodatkowych przewodników | `Tak` |
+| Zakres importu | Horyzont EPG | `5 dni` |
+| Kopiuj EPG SAT → IPTV | Kopiowanie dopasowanych wydarzeń z SAT | **`Tak`** |
+| Preferuj EPG z SAT | Pierwszeństwo EPG SAT przy nakładaniu danych | `Nie` |
+| Czułość mapowania | Ścisłe / zbalansowane / elastyczne | `Zbalansowane` |
 
-| Plik na tunerze | Przeznaczenie |
+**Ważne o EPG SAT:** w aktualnym kodzie opcja **„Kopiuj EPG SAT → IPTV” domyślnie ma wartość „Tak”**. Jeśli chcesz przetestować wyłącznie dopasowanie XMLTV, wyłącz ją w ustawieniach zaawansowanych. Wtyczka zachowuje wcześniej zapisane ustawienia, więc stan na Twoim tunerze może być inny niż wartości domyślne.
+
+## Menu Narzędzia
+
+- **Ustawienia zaawansowane** — dodatkowe opcje źródeł, importu, mapowania i zapisu.
+- **Język interfejsu** — automatycznie, polski lub angielski.
+- **Wymuś pełny import + nowe mapowanie** — ponowna analiza kanałów i XMLTV.
+- **Zbuduj mapowanie bez importu** — przygotowanie przypisań bez importowania wydarzeń.
+- **Uzupełnij prawdziwe picony IPTV (bez atrap)** — samodzielne wyszukiwanie logo.
+- **Napraw błędne referencje IPTV (kopie bezpieczeństwa)** — opcja wymagająca potwierdzenia; po naprawie uruchom ponownie GUI.
+- **Diagnostyka**, **Pokaż log** — kontrola działania.
+- **Sprawdź aktualizację**, **Aktualizuj wtyczkę** — mechanizm sprawdzający wersję repozytorium.
+- **Wyczyść cache mapowania**, **Wyczyść pliki tymczasowe** — czynności porządkowe.
+- **Informacje o projekcie / QR**.
+
+W bieżącym buildzie **nie ma** już pozycji „Usuń picony zastępcze RC8”.
+
+## Aktualizacje
+
+Aktualizacje można przeprowadzać z poziomu **AIO Panel**, instalatorem GitHub albo — gdy dostępna jest nowsza wersja rozpoznana przez mechanizm wtyczki — z jej menu **Narzędzia → Sprawdź aktualizację / Aktualizuj wtyczkę**.
+
+**Ograniczenie RC11.1:** plik `version` ma wartość `3.2.6`, a poprawki RC11 i RC11.1 używają tego samego numeru głównego. Obecny aktualizator porównuje właśnie wersję numeryczną, dlatego może **nie wykryć zmiany samego oznaczenia RC/build**. W takiej sytuacji użyj instalatora GitHub lub aktualnego pakietu z zaufanego źródła.
+
+## Pliki diagnostyczne na tunerze
+
+| Plik | Zawartość |
 |---|---|
-| `/etc/enigma2/simpleiptvepg_mapping.json` | Zapisane mapowanie XMLTV ↔ IPTV |
-| `/etc/enigma2/simpleiptvepg_overrides.json` | Ręczne przypisania nazw do XMLTV ID |
-| `/etc/enigma2/simpleiptvepg_report.json` | Ostatni raport importu, w tym `source_coverage` i `epg_autopilot` |
-| `/etc/enigma2/simpleiptvepg_state.json` | Stan ostatniego uruchomienia |
-| `/tmp/simpleiptvepg.log` | Dziennik zdarzeń |
+| `/tmp/simpleiptvepg.log` | Log przebiegu operacji |
+| `/etc/enigma2/simpleiptvepg_report.json` | Raport ostatniego importu i statystyki źródeł |
+| `/etc/enigma2/simpleiptvepg_state.json` | Stan zadania i ostatni wynik |
+| `/etc/enigma2/simpleiptvepg_mapping.json` | Przypisania XMLTV ↔ referencje IPTV |
+| `/etc/enigma2/simpleiptvepg_overrides.json` | Opcjonalne własne przypisania |
 
-W raporcie `verification.visible / verification.checked` oznacza wynik **próbki** — nie dowodzi poprawności EPG na wszystkich kanałach. `xml_service_refs` liczy referencje IPTV z wydarzeniami, a niekoniecznie unikalne marki stacji. Wykryte kolizje z SAT są chronione przed importem. Wtyczka nie naprawia automatycznie błędnych referencji bukietów.
+**Przy zgłaszaniu problemów:** prześlij log, raport i przykład nazwy kanału bez EPG. Przed publicznym udostępnieniem danych usuń prywatne adresy strumieni, tokeny, loginy i hasła dostawców IPTV. Nie publikuj całych prywatnych list kanałów bez sprawdzenia ich zawartości.
 
-Źródła XMLTV mogą być czasowo niedostępne, a automatyczne dopasowanie nie gwarantuje poprawnej ramówki każdej stacji. Nie publikuj raportów zawierających prywatne adresy dostawców bez ich sprawdzenia.
+## Ograniczenia i ważne informacje
 
-## Wersje i projekt
+- Wtyczka **nie tworzy własnych ramówek**. Kamera internetowa, niektóre kanały muzyczne i transmisje okazjonalne mogą nie mieć EPG w żadnym dostępnym XMLTV.
+- Liczby w raporcie oznaczają m.in. dopasowane **referencje usług**, a nie zawsze unikalne stacje TV.
+- Weryfikacja widoczności EPG odbywa się na **próbce**, a nie na wszystkich kanałach.
+- Picon zostanie pobrany tylko wtedy, gdy znajdzie się wiarygodne logo. Nie każdy strumień ma własny logotyp.
+- Standardowy import **nie przepisuje bukietów**. Funkcja naprawy referencji jest osobną operacją wymagającą potwierdzenia i tworzącą kopię plików, które zmienia.
+- Wtyczka nie jest źródłem kanałów IPTV ani usług dostępu do telewizji.
+- RC11.1 jest **wersją testową**. Skuteczność importu zależy od obrazu Enigma2, referencji kanałów oraz jakości i aktualności danych XMLTV.
 
-- Kod bieżący: **3.2.0 RC5 AUTO** (`src/constants.py`).
-- Plik `version`: **3.2.0** (bez oznaczenia kandydata; używany przez prosty mechanizm porównywania wersji).
-- Ostatni opublikowany **GitHub Release** może być starszy niż kod na gałęzi `main`.
-- Nazwa pakietu: `enigma2-plugin-extensions-simpleiptvepg`.
-- Katalog instalacyjny: `/usr/lib/enigma2/python/Plugins/Extensions/SimpleIPTV_EPG`.
+## Rozwój od RC5 do RC11.1
 
+Od wydania RC5 usprawniono przede wszystkim obsługę źródeł regionalnych i pełnego XMLTV, mapowanie kanałów, czytelność statusu pracy, interfejs PL/EN, pracę w tle, pobieranie prawdziwych piconów, ochronę i synchronizację referencji IPTV oraz diagnostykę. Usunięto także przestarzałą pozycję czyszczenia piconów zastępczych RC8 z menu Narzędzia.
+
+Szczegółowa historia zmian znajduje się w [`src/CHANGELOG.txt`](src/CHANGELOG.txt).
+
+## Autor i projekt
+
+**Paweł Pawełek | AIO Team**  
 **Repozytorium:** https://github.com/OliOli2013/SimpleIPTV_EPG  
-**Autor:** Paweł Pawełek | AIO Team
+**Kontakt projektu:** aio-iptv@wp.pl
 
 ---
 
-### English — quick start
+## English — quick overview
 
-**Simple IPTV EPG 3.2.0 RC5 AUTO** is a test release for Enigma2 (Python 2 / Python 3). It imports XMLTV schedules into IPTV services, completes missing IPTV picons and protects satellite EPG service identities. The simplified interface offers three everyday settings: **EPG source, automatic import interval, and IPTV picons**. All other controls remain available under **Blue → Tools → Advanced settings**.
+**Simple IPTV EPG 3.2.6 RC11.1** is a testing-stage Enigma2 plugin for matching IPTV bouquet services with XMLTV schedules and filling in missing genuine channel logos (picons). It supports automatic multi-source EPG fallback, manual remapping, optional SAT-to-IPTV EPG cloning, background importing while the Enigma2 GUI is running, and a Polish/English interface.
 
-The default configuration uses **AUTO AIO Poland**, imports every **24 hours**, and enables IPTV picon completion. SAT-to-IPTV cloning is off by default for new installations. Multi-source fallback, strict channel-name validation, duplicate-reference filtering and limited country-based EPG feed selection improve safety, but do not guarantee coverage of every channel. After installation restart Enigma2 GUI and run **Tools → Force full import + remap**. See the Polish guide above for full installation and diagnostics.
+**Install current source from GitHub:**
+
+```sh
+wget -O /tmp/simpleiptvepg_installer.sh https://raw.githubusercontent.com/OliOli2013/SimpleIPTV_EPG/main/installer.sh
+sh /tmp/simpleiptvepg_installer.sh
+```
+
+Restart the Enigma2 GUI after installation, then choose **Tools → Force full import + remap**. The `main` branch may be newer than the IPK assets in GitHub Releases. Automatic version checking currently compares `3.2.6` numerically and may not detect a change between builds using the same version number. EPG coverage depends on available XMLTV data; cameras and unscheduled streams may have no guide data.
+
+**Author:** Paweł Pawełek | AIO Team
